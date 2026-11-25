@@ -1,0 +1,28 @@
+# Beispiel-IDs durch Entitäts-IDs aus deinem Home Assistant ersetzen.
+type: custom:boiler-puffer-dashboard-card
+entitaeten:
+  boiler:
+    temperatur_bf1: sensor.beispiel_boiler_temperatur_bf1
+    temperatur_hf1: sensor.beispiel_boiler_temperatur_hf1
+    temperatur_hf2: sensor.beispiel_boiler_temperatur_hf2
+    heizanforderung: binary_sensor.beispiel_boiler_heizanforderung
+    ueberschussbetrieb: sensor.beispiel_boiler_ueberschussbetrieb
+    heizstab_status: sensor.beispiel_boiler_heizstab_status
+    heizstab_leistung: sensor.beispiel_boiler_heizstab_leistung
+  puffer:
+    temperatur_pf2_oben: sensor.beispiel_puffer_temperatur_pf2_oben
+    temperatur_pf1_unten: sensor.beispiel_puffer_temperatur_pf1_unten
+    temperatur_hf1: sensor.beispiel_puffer_temperatur_hf1
+    temperatur_hf2: sensor.beispiel_puffer_temperatur_hf2
+    heizanforderung: binary_sensor.beispiel_puffer_heizanforderung
+    ueberschussbetrieb: sensor.beispiel_puffer_ueberschussbetrieb
+    heizstab_status: sensor.beispiel_puffer_heizstab_status
+    heizstab_leistung: sensor.beispiel_puffer_heizstab_leistung
+  heizung:
+    waermepumpe_vorlauf: sensor.beispiel_heizung_waermepumpe_vorlauf
+    waermepumpe_ruecklauf: sensor.beispiel_heizung_waermepumpe_ruecklauf
+    heizkreis_vorlauf_soll: sensor.beispiel_heizung_heizkreis_vorlauf_soll
+  zirkulation:
+    ruecklauf_temperatur: sensor.beispiel_zirkulation_ruecklauf_temperatur
+    pumpe_relais: switch.beispiel_zirkulation_pumpe_relais
+    startskript: script.beispiel_zirkulation_startskript
