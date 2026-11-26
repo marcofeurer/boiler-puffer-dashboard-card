@@ -290,6 +290,40 @@ function resizeActionAreas(fields, layout) {
   }
 }
 
+const STORAGE_ENTITY_FIELDS = [
+  { key: "heizanforderung", label: "Heizanforderung", list: "schaltzustaende" },
+  { key: "ueberschussbetrieb", label: "Überschussbetrieb", list: "betriebsarten" },
+  { key: "heizstab_status", label: "Heizstab-Status", list: "betriebsarten" },
+  { key: "heizstab_leistung", label: "Heizstab-Leistung", list: "messwerte" },
+];
+const EDITOR_GROUPS = {
+  boiler: { label: STORAGES.boiler.label, fields: STORAGE_ENTITY_FIELDS },
+  puffer: { label: STORAGES.puffer.label, fields: STORAGE_ENTITY_FIELDS },
+  heizung: {
+    label: "Heizung",
+    fields: [
+      { key: "waermepumpe_vorlauf", label: "Wärmepumpe · Vorlauftemperatur", list: "messwerte" },
+      { key: "waermepumpe_ruecklauf", label: "Wärmepumpe · Rücklauftemperatur", list: "messwerte" },
+      { key: "heizkreis_vorlauf_soll", label: "Heizkreis · Vorlauf-Solltemperatur", list: "messwerte" },
+    ],
+  },
+  zirkulation: {
+    label: "Warmwasserzirkulation",
+    fields: [
+      { key: "ruecklauf_temperatur", label: "Rücklauftemperatur", list: "messwerte" },
+      { key: "pumpe_relais", label: "Pumpenrelais", list: "schaltzustaende" },
+      { key: "startskript", label: "Startskript", list: "skripte" },
+    ],
+  },
+};
+const ENTITY_LISTS = {
+  temperatur: ["sensor", "number", "input_number"],
+  messwerte: ["sensor", "number", "input_number"],
+  schaltzustaende: ["binary_sensor", "switch", "input_boolean", "sensor"],
+  betriebsarten: ["sensor", "climate", "water_heater", "select", "input_select", "number", "input_number"],
+  skripte: ["script"],
+};
+
 class DashboardCardEditor extends HTMLElement {
   constructor() {
     super();
@@ -300,6 +334,10 @@ class DashboardCardEditor extends HTMLElement {
         p { margin: 0 0 16px; color: var(--secondary-text-color, currentColor); }
         fieldset { min-width: 0; margin: 0 0 16px; padding: 12px; border: 1px solid var(--divider-color, #8195a3); border-radius: 8px; }
         legend { font-weight: 600; }
+        .entity-fields { display: grid; gap: 12px; }
+        .storage-settings { margin-top: 12px; }
+        .storage-settings[open] > summary { margin-bottom: 12px; }
+        .storage-settings > p { margin: 0 0 12px; }
         .tank-height { max-width: 180px; margin-bottom: 12px; }
         .sensor { padding: 12px 0; border-top: 1px solid var(--divider-color, #8195a3); }
         .sensor-fields { display: grid; gap: 8px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 120px); }
@@ -321,31 +359,50 @@ class DashboardCardEditor extends HTMLElement {
         input:placeholder-shown { border-color: var(--divider-color, #8195a3); }
         button { margin-top: 8px; padding: 8px 12px; font: inherit; color: inherit; background: transparent; border: 1px solid var(--divider-color, #8195a3); border-radius: 8px; cursor: pointer; }
       </style>
-      <p>Fühlerhöhen in Millimetern ab Speicherboden. 0 mm ist unten, die Speicherhöhe ist oben.</p>
-      <datalist id="temperature-entities"></datalist>
+      ${Object.keys(ENTITY_LISTS).map(key => `<datalist id="ents-${key}"></datalist>`).join("")}
       <template id="sensor-fields">
         <div class="sensor-fields">
-          <label class="entity">Temperatur-Entität<input name="entitaet" list="temperature-entities" pattern="[a-z0-9_]+[.][a-z0-9_]+" placeholder="sensor.beispiel" required></label>
+          <label class="entity">Temperatur-Entität<input name="entitaet" list="ents-temperatur" pattern="[a-z0-9_]+[.][a-z0-9_]+" placeholder="Temperatur-Entität suchen" autocomplete="off" required></label>
           <label>Name (optional)<input name="name"></label>
           <label>Höhe (mm)<input name="hoehe_mm" type="number" min="0" step="1" placeholder="0" required></label>
         </div>
       </template>
-      ${Object.entries(STORAGES).map(([key, { label }]) => `
+      ${Object.entries(EDITOR_GROUPS).map(([key, { label, fields }]) => `
         <fieldset id="${key}">
           <legend>${label}</legend>
-          <label class="tank-height">Speicherhöhe (mm)<input name="speicher_mm" type="number" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
-          <p class="empty" hidden>Keine Fühler eingetragen.</p>
-          <div class="sensors"></div>
-          <details>
-            <summary>Fühler hinzufügen</summary>
-            <form><button type="submit">Hinzufügen</button></form>
-          </details>
+          <div class="entity-fields">
+            ${fields.map(field => `
+              <label>${field.label}<input name="${field.key}" list="ents-${field.list}" pattern="[a-z0-9_]+[.][a-z0-9_]+" placeholder="Entität suchen" autocomplete="off"></label>
+            `).join("")}
+          </div>
+          ${Object.hasOwn(STORAGES, key) ? `
+            <details class="storage-settings">
+              <summary>Speicherhöhe und Temperaturfühler</summary>
+              <p>Fühlerhöhen in Millimetern ab Speicherboden.</p>
+              <label class="tank-height">Speicherhöhe (mm)<input name="speicher_mm" type="number" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
+              <p class="empty" hidden>Keine Fühler eingetragen.</p>
+              <div class="sensors"></div>
+              <details class="add-sensor">
+                <summary>Fühler hinzufügen</summary>
+                <form><button type="submit">Hinzufügen</button></form>
+              </details>
+            </details>
+          ` : ""}
         </fieldset>
       `).join("")}
     `;
     this._fields = root.getElementById("sensor-fields");
     this._sections = Object.fromEntries(Object.keys(STORAGES).map(key => [key, root.getElementById(key)]));
+    this._entityFields = Object.fromEntries(Object.keys(EDITOR_GROUPS).map(key => [
+      key, [...root.querySelectorAll(`#${key} .entity-fields input`)],
+    ]));
+    this._suggestionSignatures = new Map();
     this._tanks = {};
+    for (const [key, fields] of Object.entries(this._entityFields)) {
+      for (const input of fields) {
+        input.addEventListener("change", () => this._changeEntity(key, input));
+      }
+    }
     for (const [key, section] of Object.entries(this._sections)) {
       const height = section.querySelector('[name="speicher_mm"]');
       height.addEventListener("change", () => {
@@ -364,29 +421,35 @@ class DashboardCardEditor extends HTMLElement {
         };
         this._saveSensors(key, [...this._tanks[key].sensors, sensor]);
         form.reset();
-        section.querySelector("details").open = false;
-        section.querySelector("summary").focus();
+        const add = form.closest("details");
+        add.open = false;
+        add.querySelector("summary").focus();
       });
     }
   }
 
   set hass(hass) {
-    const suggestions = Object.entries(hass?.states ?? {})
-      .filter(([id, { attributes }]) => id.startsWith("sensor.") && (
-        attributes?.device_class === "temperature" || ["°C", "°F", "K"].includes(attributes?.unit_of_measurement)
-      ))
-      .map(([id, { attributes }]) => [id, attributes.friendly_name]);
-    const signature = JSON.stringify(suggestions);
-    if (this._suggestionSignature === signature) return;
-    this._suggestionSignature = signature;
-    const options = suggestions.map(([id, name]) => {
-      const option = document.createElement("option");
-      option.value = id;
-      option.label = name ?? id;
-      return option;
-    });
-    const list = this.shadowRoot.getElementById("temperature-entities");
-    list.replaceChildren(...options);
+    const entities = Object.entries(hass?.states ?? {}).map(([id, { attributes }]) => ({
+      id,
+      domain: id.split(".")[0],
+      name: String(attributes?.friendly_name || id),
+      temperature: attributes?.device_class === "temperature" || ["°C", "°F", "K"].includes(attributes?.unit_of_measurement),
+    }));
+    for (const [key, domains] of Object.entries(ENTITY_LISTS)) {
+      const matches = entities.filter(entity => domains.includes(entity.domain) && (key !== "temperatur" || entity.temperature));
+      const signature = JSON.stringify(matches.map(({ id, name }) => [id, name]));
+      if (this._suggestionSignatures.get(key) === signature) continue;
+      this._suggestionSignatures.set(key, signature);
+      const options = document.createDocumentFragment();
+      matches.sort((a, b) => a.name.localeCompare(b.name, "de", { numeric: true }));
+      for (const { id, name } of matches) {
+        const option = document.createElement("option");
+        option.value = id;
+        option.label = name;
+        options.append(option);
+      }
+      this.shadowRoot.getElementById(`ents-${key}`).replaceChildren(options);
+    }
   }
 
   setConfig(config) {
@@ -396,9 +459,36 @@ class DashboardCardEditor extends HTMLElement {
       key, getTankConfig(config, key, settings, entities[key]),
     ]));
     this._config = config;
+    for (const [key, fields] of Object.entries(this._entityFields)) {
+      for (const input of fields) {
+        const value = config.entitaeten?.[key]?.[input.name] ?? "";
+        if (input.value !== value) input.value = value;
+      }
+    }
     for (const [key, tank] of Object.entries(this._tanks)) {
       this._renderTank(key, tank);
     }
+  }
+
+  _changeEntity(group, input) {
+    input.value = input.value.trim();
+    if (!input.reportValidity()) return;
+    const assigned = this._config.entitaeten ?? {};
+    const current = assigned[group] ?? {};
+    if (input.value === (current[input.name] ?? "")) return;
+    const updated = { ...current };
+    if (input.value) {
+      updated[input.name] = input.value;
+    } else {
+      delete updated[input.name];
+    }
+    const entitaeten = { ...assigned };
+    if (Object.keys(updated).length) {
+      entitaeten[group] = updated;
+    } else {
+      delete entitaeten[group];
+    }
+    this._save({ entitaeten });
   }
 
   _renderTank(key, { tankHeightMm, sensors, customSensors }) {
@@ -442,7 +532,7 @@ class DashboardCardEditor extends HTMLElement {
     remove.textContent = "Entfernen";
     remove.addEventListener("click", () => {
       this._saveSensors(key, this._tanks[key].sensors.filter((_, position) => position !== index));
-      this._sections[key].querySelector("summary").focus();
+      this._sections[key].querySelector(".add-sensor > summary").focus();
     });
     row.append(remove);
     return row;

@@ -13,24 +13,23 @@ Die Karte verwendet bereits vorhandene Home-Assistant-Entitäten. Übersicht und
 1. Öffne **HACS → ⋮ → Benutzerdefinierte Repositorys**.
 2. Füge die GitHub-Adresse dieses Repositorys hinzu und wähle **Dashboard**.
 3. Öffne **Boiler, Pufferspeicher und Zirkulation** in HACS und wähle **Herunterladen**. Lade das Dashboard anschließend neu.
-4. Bearbeite dein Dashboard, füge eine **manuelle Karte** hinzu und übernimm [example.yaml](example.yaml). Ersetze die Beispiel-IDs durch deine Entitäts-IDs aus **Entwicklerwerkzeuge → Zustände**.
+4. Öffne **Dashboard bearbeiten → Karte hinzufügen** und wähle **Boiler, Pufferspeicher und Zirkulation**.
 
-Für eine erste Anzeige kannst du die primäre Entität zuordnen.
+## Entitäten visuell zuordnen
 
-```yaml
-type: custom:boiler-puffer-dashboard-card
-entitaeten:
-  boiler:
-    temperatur_bf1: sensor.beispiel_boiler_temperatur_bf1
-```
+Öffne **Dashboard bearbeiten → Karte bearbeiten**. Im visuellen Editor findest du die Entitäten in vier Gruppen.
 
-Die übrigen Zuordnungen kannst du nach Bedarf aus [example.yaml](example.yaml) ergänzen. Ohne Zuordnung verwendet die Karte Platzhalter-IDs.
+- **Boiler** und **Pufferspeicher** enthalten jeweils Heizanforderung, Überschussbetrieb, Heizstab-Status, Heizstab-Leistung und die Temperaturfühler.
+- **Heizung** enthält Wärmepumpen-Vorlauf und -Rücklauf sowie die Vorlauf-Solltemperatur des Heizkreises.
+- **Warmwasserzirkulation** enthält Rücklauftemperatur, Pumpenrelais und Startskript.
+
+Suche in den Feldern nach einer vorhandenen Entität. Der Editor zeigt bereits gespeicherte Zuordnungen an. Wenn du eines der Zuordnungsfelder leerst, verwendet die Karte dort wieder ihre Platzhalter-ID. Die Konfiguration lässt sich auch im YAML-Editor bearbeiten. [Beispielkonfiguration](example.yaml)
 
 Die Schaltfläche für die Warmwasserzirkulation ruft das unter `zirkulation.startskript` zugeordnete `script.*` auf. `zirkulation.pumpe_relais` liefert den Pumpenstatus. Lege das Skript in Home Assistant an oder verwende ein bestehendes Skript, das die Pumpe wie gewünscht steuert.
 
 ## Temperaturfühler verwalten
 
-Öffne **Dashboard bearbeiten → Karte bearbeiten**. Unter **Boiler** und **Pufferspeicher** kannst du jeweils die Innenhöhe des Speichers einstellen. Über **Fühler hinzufügen** wählst du eine vorhandene Temperatur-Entität und gibst ihre Höhe und optional einen Anzeigenamen ein. **Entfernen** nimmt den Fühler aus der Karte. Du kannst Entität, Namen und Höhe jederzeit direkt im Editor ändern.
+Klappe unter **Boiler** oder **Pufferspeicher** den Bereich **Speicherhöhe und Temperaturfühler** auf. Über **Fühler hinzufügen** wählst du eine vorhandene Temperatur-Entität und gibst ihre Höhe und optional einen Anzeigenamen ein. **Entfernen** nimmt den Fühler aus der Karte. Du kannst Entität, Namen und Höhe jederzeit direkt im Editor ändern.
 
 Miss die Höhe in Millimetern ab Speicherboden. **0 mm** liegt unten, die eingetragene Speicherhöhe liegt ganz oben. Beim Pufferspeicher dient **1000 mm** zunächst als Bezugsgrösse für die bisherigen relativen Positionen. Gib zuerst die tatsächliche Innenhöhe ein und passe dann die Fühler an.
 
