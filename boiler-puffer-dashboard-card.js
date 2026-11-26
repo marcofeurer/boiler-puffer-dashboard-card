@@ -14,9 +14,22 @@ class DashboardCard extends HTMLElement {
     return {};
   }
 
+  static getConfigElement() {
+    return document.createElement(EDITOR_TYPE);
+  }
+
   setConfig(config) {
     const buttonConfig = structuredClone(BUTTON_CONFIG);
     applyEntityOverrides(buttonConfig.variables.entitaeten, config.entitaeten);
+    const layout = getBoilerLayout(getBoilerHeights(config.boiler_hoehen));
+    buttonConfig.variables.boiler_layout = layout;
+    for (const { field, labelY } of layout.sensors) {
+      const boxCenter = labelY - layout.rowOffset + layout.rowHeight / 2;
+      buttonConfig.styles.custom_fields[field].push(
+        { top: `${boxCenter / layout.cardHeight * 100}%` },
+        { height: `${layout.rowHeight / layout.cardHeight * 100}%` },
+      );
+    }
     this._buttonConfig = buttonConfig;
     this._configureButtonCard();
   }
@@ -111,6 +124,136 @@ function applyEntityOverrides(entities, overrides) {
   }
 }
 
+const BOILER_HEIGHTS = { speicher_mm: 1410, hf2_mm: 1140, bf1_mm: 1140, hf1_mm: 525 };
+const BOILER_SENSORS = [
+  { heightKey: "hf2_mm", entityKey: "temperatur_hf2", field: "sensor_0", label: "HF2" },
+  { heightKey: "bf1_mm", entityKey: "temperatur_bf1", field: "sensor_1", label: "BF1" },
+  { heightKey: "hf1_mm", entityKey: "temperatur_hf1", field: "sensor_3", label: "HF1" },
+];
+
+function getBoilerHeights(overrides) {
+  if (overrides == null) {
+    return { ...BOILER_HEIGHTS };
+  }
+  if (!isMapping(overrides)) {
+    throw new Error("„boiler_hoehen“ muss eine Zuordnung mit Höhen in Millimetern sein.");
+  }
+
+  const heights = { ...BOILER_HEIGHTS, ...overrides };
+  if (!Number.isSafeInteger(heights.speicher_mm) || heights.speicher_mm < 1) {
+    throw new Error("„boiler_hoehen.speicher_mm“ muss eine positive ganze Zahl sein.");
+  }
+  for (const key of Object.keys(heights)) {
+    if (!Object.hasOwn(BOILER_HEIGHTS, key)) {
+      throw new Error(`Unbekannte Boilerhöhe „${key}“.`);
+    }
+  }
+  for (const { heightKey } of BOILER_SENSORS) {
+    if (!Number.isSafeInteger(heights[heightKey]) || heights[heightKey] < 0 || heights[heightKey] > heights.speicher_mm) {
+      throw new Error(`„boiler_hoehen.${heightKey}“ muss eine ganze Zahl zwischen 0 und ${heights.speicher_mm} sein.`);
+    }
+  }
+  return heights;
+}
+
+function getBoilerLayout(heights) {
+  const layout = { tankTop: 247, tankHeight: 310, cardHeight: 1080, rowHeight: 47, rowOffset: 25 };
+  const sensors = BOILER_SENSORS.map(sensor => {
+    const position = heights[sensor.heightKey] / heights.speicher_mm;
+    const tankY = layout.tankTop + layout.tankHeight * (1 - position);
+    return { ...sensor, position, tankY };
+  });
+
+  // Bei nahen Messpunkten die Werteboxen mit Mindestabstand um die Markierungen verteilen.
+  const ordered = [...sensors].sort((a, b) => a.tankY - b.tankY);
+  const gap = layout.rowHeight + 11;
+  const groups = [];
+  for (const [index, sensor] of ordered.entries()) {
+    const group = { sensors: [sensor], y: sensor.tankY - index * gap };
+    while (groups.length && groups.at(-1).y > group.y) {
+      const previous = groups.pop();
+      const total = previous.sensors.length + group.sensors.length;
+      group.y = (previous.y * previous.sensors.length + group.y * group.sensors.length) / total;
+      group.sensors.unshift(...previous.sensors);
+    }
+    groups.push(group);
+  }
+
+  const minY = layout.tankTop + 8;
+  const maxY = layout.tankTop + layout.tankHeight - (ordered.length - 1) * gap;
+  let index = 0;
+  for (const group of groups) {
+    const y = Math.min(maxY, Math.max(minY, group.y));
+    for (const sensor of group.sensors) {
+      sensor.labelY = y + index * gap;
+      index += 1;
+    }
+  }
+  return { ...layout, sensors };
+}
+
+class DashboardCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>
+        :host { display: block; }
+        p { margin: 0 0 16px; color: var(--secondary-text-color, currentColor); }
+        .heights { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 12px; }
+        label { display: grid; gap: 6px; }
+        input {
+          box-sizing: border-box;
+          width: 100%;
+          min-height: 40px;
+          padding: 8px 12px;
+          font: inherit;
+          color: inherit;
+          background: var(--card-background-color, transparent);
+          border: 1px solid var(--divider-color, #8195a3);
+          border-radius: 8px;
+        }
+        input:invalid { border-color: var(--error-color, #c23b4f); }
+      </style>
+      <p id="height-description">Fühlerhöhen in Millimetern ab Speicherboden. 0 mm ist unten, die Speicherhöhe ist oben.</p>
+      <div class="heights" role="group" aria-label="Boilerhöhen" aria-describedby="height-description">
+        <label>Speicherhöhe (mm)<input name="speicher_mm" type="number" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
+        ${BOILER_SENSORS.map(({ heightKey, label }) => `
+          <label>${label} (mm)<input name="${heightKey}" type="number" min="0" step="1" required></label>
+        `).join("")}
+      </div>
+    `;
+    this._inputs = Object.fromEntries([...root.querySelectorAll("input")].map(input => [input.name, input]));
+    root.addEventListener("change", event => this._changeHeight(event.target));
+  }
+
+  setConfig(config) {
+    this._config = config;
+    const heights = getBoilerHeights(config.boiler_hoehen);
+    this._inputs.speicher_mm.min = Math.max(1, ...BOILER_SENSORS.map(({ heightKey }) => heights[heightKey]));
+    for (const { heightKey } of BOILER_SENSORS) {
+      this._inputs[heightKey].max = heights.speicher_mm;
+    }
+    for (const [key, value] of Object.entries(heights)) {
+      this._inputs[key].value = value;
+    }
+  }
+
+  _changeHeight(input) {
+    const value = input.valueAsNumber;
+    if (!input.reportValidity()) {
+      return;
+    }
+    const stored = this._config.boiler_hoehen ?? {};
+    if (value === (stored[input.name] ?? BOILER_HEIGHTS[input.name])) {
+      return;
+    }
+    const config = { ...this._config, boiler_hoehen: { ...stored, [input.name]: value } };
+    this.setConfig(config);
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+  }
+}
+
 // Lovelace-Konfiguration der zugrunde liegenden Button Card.
 const BUTTON_CONFIG = {
   "type": "custom:button-card",
@@ -194,6 +337,20 @@ const BUTTON_CONFIG = {
       "/* Ungültige Messwerte bleiben ungültig */ const addOffset = (value, offset) =>",
       "  Number.isFinite(value) ? value + offset : value;",
       "const ids = variables.entitaeten;",
+      "const boilerLayout = variables.boiler_layout;",
+      "const boilerReadings = new Map();",
+      "for (const { entityKey, position } of boilerLayout.sensors) {",
+      "  const raw = states[ids.boiler[entityKey]]?.state;",
+      "  const value = Number.parseFloat(String(raw).trim().replace(',', '.').replace(/[^\\d.-]/g, ''));",
+      "  const offset = entityKey === 'temperatur_hf2' ? offsetBoilerHF2 : 0;",
+      "  if (!boilerReadings.has(position)) boilerReadings.set(position, []);",
+      "  if (Number.isFinite(value)) boilerReadings.get(position).push(addOffset(value, offset));",
+      "}",
+      "// Fühler auf derselben Höhe ergeben gemeinsam einen Messpunkt.",
+      "const boilerPoints = Array.from(boilerReadings, ([position, values]) => ({",
+      "  position,",
+      "  temperature: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null",
+      "})).sort((a, b) => a.position - b.position);",
       "const themedSvg = (()=>{",
       "",
       "",
@@ -215,59 +372,8 @@ const BUTTON_CONFIG = {
       "  const tMax = 55;",
       "",
       "  // =====================================================",
-      "  // SENSOREN",
-      "  // =====================================================",
-      "",
-      "  const TOP = states[",
-      "    ids.boiler.temperatur_hf2",
-      "  ]?.state;",
-      "",
-      "  const MID = states[",
-      "    ids.boiler.temperatur_bf1",
-      "  ]?.state;",
-      "",
-      "  const BOTTOM_ELWA = states[",
-      "    ids.boiler.temperatur_hf1",
-      "  ]?.state;",
-      "",
-      "",
-      "  // =====================================================",
-      "  // POSITIONEN DER FÜHLER IM SPEICHER",
-      "  // =====================================================",
-      "",
-      "  // CSS-Verlauf \"to top\": 0 = unten, 1 = oben.",
-      "  // HF1: 885 mm von oben = 525 mm von unten bei 1410 mm Speicherhöhe.",
-      "  const tankHeight = 1410;",
-      "  const posElwaBottom = 525 / tankHeight;",
-      "  const posTop = 1140 / tankHeight;",
-      "",
-      "  // =====================================================",
       "  // HILFSFUNKTIONEN",
       "  // =====================================================",
-      "",
-      "  const toNum = (value) => {",
-      "    if (",
-      "      value === null ||",
-      "      value === undefined ||",
-      "      value === '' ||",
-      "      value === 'unknown' ||",
-      "      value === 'unavailable' ||",
-      "      value === 'none'",
-      "    ) {",
-      "      return null;",
-      "    }",
-      "",
-      "    const cleaned = String(value)",
-      "      .trim()",
-      "      .replace(',', '.')",
-      "      .replace(/[^\\d.-]/g, '');",
-      "",
-      "    const number = parseFloat(cleaned);",
-      "",
-      "    return Number.isFinite(number)",
-      "      ? number",
-      "      : null;",
-      "  };",
       "",
       "  const clamp = (value, min, max) => {",
       "    return Math.min(Math.max(value, min), max);",
@@ -276,28 +382,6 @@ const BUTTON_CONFIG = {
       "  const lerp = (start, end, factor) => {",
       "    return start + (end - start) * factor;",
       "  };",
-      "",
-      "  const fallbackTemperature = (position) => {",
-      "    return lerp(tMin, tMax, clamp(position, 0, 1));",
-      "  };",
-      "",
-      "",
-      "  const tElwaBottom =",
-      "    toNum(BOTTOM_ELWA) ??",
-      "    fallbackTemperature(posElwaBottom);",
-      "",
-      "  // HF2 und BF1 sitzen gemeinsam am oberen e-Anschluss.",
-      "  // Für den Verlauf wird aus allen verfügbaren Werten an",
-      "  // diesem Messpunkt der Mittelwert gebildet.",
-      "  const topValues = [",
-      "    addOffset(toNum(TOP), offsetBoilerHF2),",
-      "    toNum(MID)",
-      "  ].filter(value => Number.isFinite(value));",
-      "",
-      "  const tTop = topValues.length > 0",
-      "    ? topValues.reduce((sum, value) => sum + value, 0) /",
-      "      topValues.length",
-      "    : fallbackTemperature(posTop);",
       "",
       "  // =====================================================",
       "  // 31-PUNKT-GLT-FARBPALETTE",
@@ -391,12 +475,13 @@ const BUTTON_CONFIG = {
       "  // nächsten realen Fühlers.",
       "  // =====================================================",
       "",
-      "  const sensorPoints = [",
-      "    { position: 0.00,          temperature: tElwaBottom },",
-      "    { position: posElwaBottom, temperature: tElwaBottom },",
-      "    { position: posTop,        temperature: tTop },",
-      "    { position: 1.00,          temperature: tTop }",
-      "  ];",
+      "  const sensorPoints = boilerPoints.map(({ position, temperature }) => ({",
+      "    position, temperature: temperature ?? lerp(tMin, tMax, position)",
+      "  }));",
+      "  const bottom = sensorPoints[0];",
+      "  const top = sensorPoints.at(-1);",
+      "  if (bottom.position > 0) sensorPoints.unshift({ ...bottom, position: 0 });",
+      "  if (top.position < 1) sensorPoints.push({ ...top, position: 1 });",
       "",
       "  // =====================================================",
       "  // PCHIP / MONOTONE KUBISCHE INTERPOLATION",
@@ -411,6 +496,7 @@ const BUTTON_CONFIG = {
       "    const x = points.map(point => point.position);",
       "    const y = points.map(point => point.temperature);",
       "    const count = points.length;",
+      "    if (count === 2) return position => clamp(lerp(y[0], y[1], position), tMin, tMax);",
       "",
       "    const h = [];",
       "    const delta = [];",
@@ -920,46 +1006,19 @@ const BUTTON_CONFIG = {
       "const indices = [",
       "",
       "(()=>{",
-      "  const hf2 = addOffset(",
-      "    Number.parseFloat(states[ids.boiler.temperatur_hf2]?.state),",
-      "    offsetBoilerHF2",
-      "  );",
-      "  const bf1 = Number.parseFloat(",
-      "    states[ids.boiler.temperatur_bf1]?.state",
-      "  );",
-      "  const hf1 = Number.parseFloat(",
-      "    states[ids.boiler.temperatur_hf1]?.state",
-      "  );",
+      "  const measured = boilerPoints.filter(point => Number.isFinite(point.temperature));",
+      "  if (measured.length < 2) return '—';",
       "",
-      "  const topValues = [hf2, bf1].filter(Number.isFinite);",
-      "",
-      "  if (",
-      "    topValues.length === 0 ||",
-      "    !Number.isFinite(hf1)",
-      "  ) {",
-      "    return '—';",
+      "  // Mittlere Temperatur über die Speicherhöhe. An den Rändern gilt der nächste Messwert.",
+      "  let previous = measured[0];",
+      "  let average = previous.position * previous.temperature;",
+      "  for (const point of measured.slice(1)) {",
+      "    average += (point.position - previous.position) * (point.temperature + previous.temperature) / 2;",
+      "    previous = point;",
       "  }",
+      "  average += (1 - previous.position) * previous.temperature;",
       "",
-      "  // HF2 und BF1 liegen gemeinsam am oberen e-Anschluss.",
-      "  const oben =",
-      "    topValues.reduce((sum, value) => sum + value, 0) /",
-      "    topValues.length;",
-      "",
-      "  // Messpunkte von oben: HF2/BF1 bei 270 mm und HF1 bei 885 mm",
-      "  // im 1410-mm-Speicher.",
-      "  const posOben = 270 / 1410;",
-      "  const posHF1 = 885 / 1410;",
-      "",
-      "  // Flächengewichte aus den halben Abständen zwischen den",
-      "  // Messpunkten; oberhalb/unterhalb gilt der nächste Fühlerwert.",
-      "  const gewichtOben = (posOben + posHF1) / 2;",
-      "  const gewichtHF1 = 1 - gewichtOben;",
-      "",
-      "  const t_eff =",
-      "    (oben * gewichtOben) +",
-      "    (hf1 * gewichtHF1);",
-      "",
-      "  let pct = (t_eff - 25) / (55 - 25) * 100;",
+      "  let pct = (average - 25) / (55 - 25) * 100;",
       "  pct = Math.min(100, Math.max(0, pct));",
       "",
       "  return Math.round(pct) + ' %';",
@@ -1064,15 +1123,18 @@ const BUTTON_CONFIG = {
       " const esc=s=>String(s).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&apos;'}[c]));",
       " const text=(x,y,v,size=14,color='#243C4A',weight=400,anchor='start')=>`<text x=\"${x}\" y=\"${y}\" font-size=\"${size <= 14 ? size + 1.5 : size <= 16 ? size + 1 : size}\" fill=\"${color}\" font-weight=\"${weight}\" text-anchor=\"${anchor}\">${esc(v)}</text>`;",
       " const box=(x,y,w,ht,fill='#FFFFFF',radius=18)=>`<rect x=\"${x}\" y=\"${y}\" width=\"${w}\" height=\"${ht}\" rx=\"${radius}\" fill=\"${fill}\" stroke=\"#DCE5EB\"/>`;",
+      " const boilerRows = boilerLayout.sensors.map(({ label, entityKey, position, labelY }) =>",
+      "   [label, ids.boiler[entityKey], 1 - position, labelY]);",
       " const cfg=[",
-      " {x:24,name:'WARMWASSER',sub:'Boiler · Trinkwarmwasser',key:'boiler',rows:[['HF2 · oben',ids.boiler.temperatur_hf2,270/1410],['BF1 · oben',ids.boiler.temperatur_bf1,270/1410],['HF1',ids.boiler.temperatur_hf1,885/1410]]},",
+      " {x:24,name:'WARMWASSER',sub:'Boiler · Trinkwarmwasser',key:'boiler',rows:boilerRows},",
       " {x:512,name:'HEIZPUFFER',sub:'Pufferspeicher · Heizungswasser',key:'puffer',rows:[['PF2 · oben',ids.puffer.temperatur_pf2_oben,.1],['HF2',ids.puffer.temperatur_hf2,0.1+(47.9-35.7)/(72-35.7)*0.8],['HF1',ids.puffer.temperatur_hf1,0.1+(60-35.7)/(72-35.7)*0.8],['PF1 · unten',ids.puffer.temperatur_pf1_unten,.9]]}",
       " ];",
       " const colorStops=css=>[...css.matchAll(/(rgb\\([^)]+\\))\\s+([\\d.]+)%/g)].map(m=>`<stop offset=\"${m[2]}%\" stop-color=\"${m[1]}\"/>`).join('');",
       " let defs='';",
       " cfg.forEach((c,i)=>{const available=c.rows.some(r=>Number.isFinite(num(r[1])));defs+=`<linearGradient id=\"storage-modern-${i}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">${available?colorStops(gradients[i]):'<stop offset=\"0%\" stop-color=\"#A4AFB8\"/><stop offset=\"100%\" stop-color=\"#C9D1D7\"/>'}</linearGradient>`;});",
       " defs+='<linearGradient id=\"storage-scale\"><stop offset=\"0%\" stop-color=\"#0046C8\"/><stop offset=\"25%\" stop-color=\"#00B4AB\"/><stop offset=\"45%\" stop-color=\"#48BE34\"/><stop offset=\"65%\" stop-color=\"#EADB00\"/><stop offset=\"82%\" stop-color=\"#FF7D00\"/><stop offset=\"100%\" stop-color=\"#E81414\"/></linearGradient>';",
-      " let svg=`<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1000\" height=\"1080\" viewBox=\"0 0 1000 1080\" style=\"display:block;width:100%;height:auto\" role=\"img\" aria-label=\"Warmwasser und Heizpuffer\"><defs>${defs}</defs><rect width=\"1000\" height=\"1080\" rx=\"24\" fill=\"#EFF4F7\"/><g font-family=\"Arial, sans-serif\">`;",
+      " const cardHeight = boilerLayout.cardHeight;",
+      " let svg=`<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1000\" height=\"${cardHeight}\" viewBox=\"0 0 1000 ${cardHeight}\" style=\"display:block;width:100%;height:auto\" role=\"img\" aria-label=\"Warmwasser und Heizpuffer\"><defs>${defs}</defs><rect width=\"1000\" height=\"${cardHeight}\" rx=\"24\" fill=\"#EFF4F7\"/><g font-family=\"Arial, sans-serif\">`;",
       " svg+=text(26,40,'SPEICHER & WARMWASSER',25,'#243C4A',700)+text(26,64,'Temperaturen · Ladezustand · Zirkulation',13,'#738897');",
       " const statusCodes={'0':['Bereitschaft','#188E65'],'1':['Heizen','#D88337'],'2':['Backup-Heizen','#D88337'],'3':['Temperatur erreicht','#188E65'],'4':['Kein Signal','#C23B4F'],'6':['Gesperrt / Pause','#738897']};",
       " cfg.forEach((c,i)=>{",
@@ -1084,13 +1146,15 @@ const BUTTON_CONFIG = {
       "  svg+=box(x,92,464,640)+text(x+22,124,c.name,17,'#243C4A',700)+text(x+22,146,c.sub,12,'#738897');",
       "  svg+=box(x+20,163,424,38,charging?'#EAF7F0':'#F5F8FA',10)+text(x+35,188,mode,14,charging?'#188E65':'#738897',600);",
       "  svg+=text(x+22,226,'TEMPERATURSCHICHTUNG',10,'#83939F',700)+text(x+424,226,'LADEINDEX  '+indices[i],17,'#426E86',700,'end');",
-      "  const tx=x+35,ty=247,tw=156,th=310;",
-      "  svg+=`<rect x=\"${tx}\" y=\"${ty}\" width=\"${tw}\" height=\"${th}\" rx=\"48\" fill=\"url(#storage-modern-${i})\" stroke=\"#8195A3\" stroke-width=\"2\"/><path d=\"M${tx+12} ${ty+48} V${ty+th-48}\" stroke=\"#FFFFFF\" stroke-opacity=\"0.4\" stroke-width=\"4\" stroke-linecap=\"round\"/><ellipse cx=\"${tx+tw/2}\" cy=\"${ty+30}\" rx=\"67\" ry=\"19\" fill=\"#FFFFFF\" fill-opacity=\"0.17\"/><path d=\"M${tx+15} ${ty+th-28} Q${tx+tw/2} ${ty+th-3} ${tx+tw-15} ${ty+th-28}\" fill=\"none\" stroke=\"#243C4A\" stroke-opacity=\"0.14\" stroke-width=\"2\"/>`;",
-      "  const rowsY=i===0?[284,342,ty+th*(885/1410)]:c.rows.map(row=>ty+th*row[2]);",
-      "  c.rows.forEach(([label,id,pos],j)=>{",
-      "   const sy=ty+th*pos,cy=rowsY[j];",
-      "   svg+=`<path d=\"M${tx+tw-4} ${sy} H${x+209} L${x+224} ${cy}\" fill=\"none\" stroke=\"#B8C7D1\" stroke-width=\"1.3\"/><circle cx=\"${tx+tw-4}\" cy=\"${sy}\" r=\"3\" fill=\"#FFFFFF\" stroke=\"#8399A8\"/>`;",
-      "   svg+=box(x+224,cy-25,215,47,'#F7FAFC',10)+text(x+236,cy-7,label,10,'#738897',600)+text(x+424,cy+11,fmt(num(id))+' °C',21,'#243C4A',700,'end');",
+      "  const { tankTop: ty, tankHeight: th, rowHeight, rowOffset } = boilerLayout;",
+      "  const tx=x+35,tw=156,radius=48;",
+      "  svg+=`<rect x=\"${tx}\" y=\"${ty}\" width=\"${tw}\" height=\"${th}\" rx=\"${radius}\" fill=\"url(#storage-modern-${i})\" stroke=\"#8195A3\" stroke-width=\"2\"/><path d=\"M${tx+12} ${ty+48} V${ty+th-48}\" stroke=\"#FFFFFF\" stroke-opacity=\"0.4\" stroke-width=\"4\" stroke-linecap=\"round\"/><ellipse cx=\"${tx+tw/2}\" cy=\"${ty+30}\" rx=\"67\" ry=\"19\" fill=\"#FFFFFF\" fill-opacity=\"0.17\"/><path d=\"M${tx+15} ${ty+th-28} Q${tx+tw/2} ${ty+th-3} ${tx+tw-15} ${ty+th-28}\" fill=\"none\" stroke=\"#243C4A\" stroke-opacity=\"0.14\" stroke-width=\"2\"/>`;",
+      "  c.rows.forEach(([label,id,pos,labelY])=>{",
+      "   const sy=ty+th*pos,cy=labelY??sy;",
+      "   const cornerY = c.key === 'boiler' ? Math.max(0, radius - Math.min(sy - ty, ty + th - sy)) : 0;",
+      "   const markerX = tx + tw - 4 - radius + Math.sqrt(radius ** 2 - cornerY ** 2);",
+      "   svg+=`<path d=\"M${markerX} ${sy} H${x+209} L${x+224} ${cy}\" fill=\"none\" stroke=\"#B8C7D1\" stroke-width=\"1.3\"/><circle cx=\"${markerX}\" cy=\"${sy}\" r=\"3\" fill=\"#FFFFFF\" stroke=\"#8399A8\"/>`;",
+      "   svg+=box(x+224,cy-rowOffset,215,rowHeight,'#F7FAFC',10)+text(x+236,cy-7,label,10,'#738897',600)+text(x+424,cy+11,fmt(num(id))+' °C',21,'#243C4A',700,'end');",
       "  });",
       "  svg+=text(x+113,582,'25 °C  →  55 °C',11,'#83939F',400,'middle');",
       "  svg+=box(x+20,593,424,36,'#F5F8FA',9);",
@@ -2223,13 +2287,7 @@ const BUTTON_CONFIG = {
           "left": "35.55%"
         },
         {
-          "top": "26.15740740740741%"
-        },
-        {
           "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
         },
         {
           "transform": "translate(-50%, -50%)"
@@ -2252,13 +2310,7 @@ const BUTTON_CONFIG = {
           "left": "35.55%"
         },
         {
-          "top": "31.52777777777778%"
-        },
-        {
           "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
         },
         {
           "transform": "translate(-50%, -50%)"
@@ -2281,13 +2333,7 @@ const BUTTON_CONFIG = {
           "left": "35.55%"
         },
         {
-          "top": "40.88652482269503%"
-        },
-        {
           "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
         },
         {
           "transform": "translate(-50%, -50%)"
@@ -2740,8 +2786,10 @@ const BUTTON_CONFIG = {
 };
 
 const CARD_TYPE = "boiler-puffer-dashboard-card";
+const EDITOR_TYPE = `${CARD_TYPE}-editor`;
 
 if (!customElements.get(CARD_TYPE)) {
+  customElements.define(EDITOR_TYPE, DashboardCardEditor);
   customElements.define(CARD_TYPE, DashboardCard);
   window.customCards ??= [];
   window.customCards.push({

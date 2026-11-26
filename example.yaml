@@ -1,5 +1,11 @@
 # Beispiel-IDs durch Entitäts-IDs aus deinem Home Assistant ersetzen.
 type: custom:boiler-puffer-dashboard-card
+# Optional. Fühlerhöhen in mm ab Speicherboden.
+boiler_hoehen:
+  speicher_mm: 1410
+  hf2_mm: 1140
+  bf1_mm: 1140
+  hf1_mm: 525
 entitaeten:
   boiler:
     temperatur_bf1: sensor.beispiel_boiler_temperatur_bf1
