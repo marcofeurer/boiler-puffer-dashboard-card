@@ -1,25 +1,40 @@
 # Beispiel-IDs durch Entitäts-IDs aus deinem Home Assistant ersetzen.
 type: custom:boiler-puffer-dashboard-card
-# Optional. Fühlerhöhen in mm ab Speicherboden.
+# Fühlerhöhen in mm ab Speicherboden.
 boiler_hoehen:
   speicher_mm: 1410
-  hf2_mm: 1140
-  bf1_mm: 1140
-  hf1_mm: 525
+boiler_fuehler:
+  - entitaet: sensor.beispiel_boiler_temperatur_hf2
+    name: HF2
+    hoehe_mm: 1140
+  - entitaet: sensor.beispiel_boiler_temperatur_bf1
+    name: BF1
+    hoehe_mm: 1140
+  - entitaet: sensor.beispiel_boiler_temperatur_hf1
+    name: HF1
+    hoehe_mm: 525
+puffer_hoehen:
+  speicher_mm: 1000
+puffer_fuehler:
+  - entitaet: sensor.beispiel_puffer_temperatur_pf2_oben
+    name: PF2 · oben
+    hoehe_mm: 900
+  - entitaet: sensor.beispiel_puffer_temperatur_hf2
+    name: HF2
+    hoehe_mm: 631
+  - entitaet: sensor.beispiel_puffer_temperatur_hf1
+    name: HF1
+    hoehe_mm: 364
+  - entitaet: sensor.beispiel_puffer_temperatur_pf1_unten
+    name: PF1 · unten
+    hoehe_mm: 100
 entitaeten:
   boiler:
-    temperatur_bf1: sensor.beispiel_boiler_temperatur_bf1
-    temperatur_hf1: sensor.beispiel_boiler_temperatur_hf1
-    temperatur_hf2: sensor.beispiel_boiler_temperatur_hf2
     heizanforderung: binary_sensor.beispiel_boiler_heizanforderung
     ueberschussbetrieb: sensor.beispiel_boiler_ueberschussbetrieb
     heizstab_status: sensor.beispiel_boiler_heizstab_status
     heizstab_leistung: sensor.beispiel_boiler_heizstab_leistung
   puffer:
-    temperatur_pf2_oben: sensor.beispiel_puffer_temperatur_pf2_oben
-    temperatur_pf1_unten: sensor.beispiel_puffer_temperatur_pf1_unten
-    temperatur_hf1: sensor.beispiel_puffer_temperatur_hf1
-    temperatur_hf2: sensor.beispiel_puffer_temperatur_hf2
     heizanforderung: binary_sensor.beispiel_puffer_heizanforderung
     ueberschussbetrieb: sensor.beispiel_puffer_ueberschussbetrieb
     heizstab_status: sensor.beispiel_puffer_heizstab_status

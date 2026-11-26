@@ -21,14 +21,37 @@ class DashboardCard extends HTMLElement {
   setConfig(config) {
     const buttonConfig = structuredClone(BUTTON_CONFIG);
     applyEntityOverrides(buttonConfig.variables.entitaeten, config.entitaeten);
-    const layout = getBoilerLayout(getBoilerHeights(config.boiler_hoehen));
-    buttonConfig.variables.boiler_layout = layout;
-    for (const { field, labelY } of layout.sensors) {
-      const boxCenter = labelY - layout.rowOffset + layout.rowHeight / 2;
-      buttonConfig.styles.custom_fields[field].push(
-        { top: `${boxCenter / layout.cardHeight * 100}%` },
-        { height: `${layout.rowHeight / layout.cardHeight * 100}%` },
-      );
+    const tanks = Object.entries(STORAGES).map(([key, settings]) => ({
+      key, ...getTankConfig(config, key, settings, buttonConfig.variables.entitaeten[key]),
+    }));
+    const layout = getStorageLayout(tanks);
+    buttonConfig.variables.storage_layout = layout;
+    const fields = buttonConfig.styles.custom_fields;
+    if (layout.extraHeight) {
+      resizeActionAreas(fields, layout);
+    }
+    const sensors = layout.tanks.flatMap(tank => tank.sensors);
+    if (sensors.length) {
+      buttonConfig.entity = sensors[0].entity;
+      buttonConfig.triggers_update.push(...new Set(sensors.map(sensor => sensor.entity)));
+    }
+    const { card: detailsCard } = buttonConfig.custom_fields.sensor_8;
+    for (const tank of layout.tanks) {
+      for (const [index, { entity, labelY }] of tank.sensors.entries()) {
+        const field = `${tank.key}_sensor_${index}`;
+        buttonConfig.custom_fields[field] = { card: { ...structuredClone(detailsCard), entity } };
+        const center = labelY - layout.rowOffset + layout.rowHeight / 2;
+        fields[field] = [
+          { position: "absolute" },
+          { left: percentOf(STORAGES[tank.key].x + 331.5, 1000) },
+          { width: "21.5%" },
+          { top: percentOf(center, layout.cardHeight) },
+          { height: percentOf(layout.rowHeight, layout.cardHeight) },
+          { transform: "translate(-50%, -50%)" },
+          { "pointer-events": "auto" },
+          { "z-index": 5 },
+        ];
+      }
     }
     this._buttonConfig = buttonConfig;
     this._configureButtonCard();
@@ -97,6 +120,8 @@ function isMapping(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const ENTITY_ID = /^[a-z0-9_]+\.[a-z0-9_]+$/;
+
 function applyEntityOverrides(entities, overrides) {
   if (overrides == null) {
     return;
@@ -116,7 +141,7 @@ function applyEntityOverrides(entities, overrides) {
       if (!Object.hasOwn(entities[group], key)) {
         throw new Error(`Unbekannte Entitätszuordnung „${group}.${key}“.`);
       }
-      if (typeof entityId !== "string" || !/^[a-z0-9_]+\.[a-z0-9_]+$/.test(entityId)) {
+      if (typeof entityId !== "string" || !ENTITY_ID.test(entityId)) {
         throw new Error(`Ungültige Entitäts-ID für „${group}.${key}“.`);
       }
       entities[group][key] = entityId;
@@ -124,49 +149,104 @@ function applyEntityOverrides(entities, overrides) {
   }
 }
 
-const BOILER_HEIGHTS = { speicher_mm: 1410, hf2_mm: 1140, bf1_mm: 1140, hf1_mm: 525 };
-const BOILER_SENSORS = [
-  { heightKey: "hf2_mm", entityKey: "temperatur_hf2", field: "sensor_0", label: "HF2" },
-  { heightKey: "bf1_mm", entityKey: "temperatur_bf1", field: "sensor_1", label: "BF1" },
-  { heightKey: "hf1_mm", entityKey: "temperatur_hf1", field: "sensor_3", label: "HF1" },
-];
+const STORAGES = {
+  boiler: {
+    label: "Boiler",
+    x: 24,
+    heightMm: 1410,
+    defaults: [
+      { entityKey: "temperatur_hf2", name: "HF2", heightKey: "hf2_mm", heightMm: 1140 },
+      { entityKey: "temperatur_bf1", name: "BF1", heightKey: "bf1_mm", heightMm: 1140 },
+      { entityKey: "temperatur_hf1", name: "HF1", heightKey: "hf1_mm", heightMm: 525 },
+    ],
+  },
+  puffer: {
+    label: "Pufferspeicher",
+    x: 512,
+    heightMm: 1000,
+    defaults: [
+      { entityKey: "temperatur_pf2_oben", name: "PF2 · oben", position: 0.9 },
+      { entityKey: "temperatur_hf2", name: "HF2", position: 0.6311294765840221 },
+      { entityKey: "temperatur_hf1", name: "HF1", position: 0.36446280991735536 },
+      { entityKey: "temperatur_pf1_unten", name: "PF1 · unten", position: 0.1 },
+    ],
+  },
+};
+const DEFAULT_LAYOUT = { tankTop: 247, tankHeight: 310, cardHeight: 1080, rowHeight: 47, rowOffset: 25 };
 
-function getBoilerHeights(overrides) {
-  if (overrides == null) {
-    return { ...BOILER_HEIGHTS };
-  }
+function getTankConfig(config, key, settings, entities) {
+  const heightKey = `${key}_hoehen`;
+  const listKey = `${key}_fuehler`;
+  const overrides = config[heightKey] ?? {};
   if (!isMapping(overrides)) {
-    throw new Error("„boiler_hoehen“ muss eine Zuordnung mit Höhen in Millimetern sein.");
+    throw new Error(`„${heightKey}“ muss eine Zuordnung mit Höhen in Millimetern sein.`);
   }
 
-  const heights = { ...BOILER_HEIGHTS, ...overrides };
-  if (!Number.isSafeInteger(heights.speicher_mm) || heights.speicher_mm < 1) {
-    throw new Error("„boiler_hoehen.speicher_mm“ muss eine positive ganze Zahl sein.");
+  const heights = { speicher_mm: settings.heightMm };
+  for (const sensor of settings.defaults) {
+    if (sensor.heightKey) heights[sensor.heightKey] = sensor.heightMm;
   }
-  for (const key of Object.keys(heights)) {
-    if (!Object.hasOwn(BOILER_HEIGHTS, key)) {
-      throw new Error(`Unbekannte Boilerhöhe „${key}“.`);
+  for (const [name, value] of Object.entries(overrides)) {
+    if (!Object.hasOwn(heights, name)) {
+      throw new Error(`Unbekannte Speicherhöhe „${heightKey}.${name}“.`);
+    }
+    heights[name] = value;
+  }
+  const tankHeightMm = heights.speicher_mm;
+  if (!Number.isSafeInteger(tankHeightMm) || tankHeightMm < 1) {
+    throw new Error(`„${heightKey}.speicher_mm“ muss eine positive ganze Zahl sein.`);
+  }
+  const customSensors = Object.hasOwn(config, listKey);
+  const sensors = customSensors ? config[listKey] : settings.defaults.map(sensor => ({
+    entitaet: entities[sensor.entityKey],
+    name: sensor.name,
+    hoehe_mm: sensor.heightKey ? heights[sensor.heightKey] : Math.round(sensor.position * tankHeightMm),
+  }));
+
+  if (!Array.isArray(sensors)) {
+    throw new Error(`„${listKey}“ muss eine Liste sein.`);
+  }
+  for (const [index, sensor] of sensors.entries()) {
+    const path = customSensors ? `${listKey}[${index}]` : `${heightKey}.${settings.defaults[index].heightKey ?? "speicher_mm"}`;
+    if (!isMapping(sensor) || typeof sensor.entitaet !== "string" || !ENTITY_ID.test(sensor.entitaet)) {
+      throw new Error(`„${path}“ benötigt eine gültige Entitäts-ID.`);
+    }
+    if (sensor.name !== undefined && typeof sensor.name !== "string") {
+      throw new Error(`„${path}.name“ muss ein Text sein.`);
+    }
+    if (!Number.isSafeInteger(sensor.hoehe_mm) || sensor.hoehe_mm < 0 || sensor.hoehe_mm > tankHeightMm) {
+      throw new Error(`Die Fühlerhöhe in „${path}“ muss eine ganze Zahl zwischen 0 und ${tankHeightMm} sein.`);
     }
   }
-  for (const { heightKey } of BOILER_SENSORS) {
-    if (!Number.isSafeInteger(heights[heightKey]) || heights[heightKey] < 0 || heights[heightKey] > heights.speicher_mm) {
-      throw new Error(`„boiler_hoehen.${heightKey}“ muss eine ganze Zahl zwischen 0 und ${heights.speicher_mm} sein.`);
-    }
-  }
-  return heights;
+  return { tankHeightMm, sensors, customSensors };
 }
 
-function getBoilerLayout(heights) {
-  const layout = { tankTop: 247, tankHeight: 310, cardHeight: 1080, rowHeight: 47, rowOffset: 25 };
-  const sensors = BOILER_SENSORS.map(sensor => {
-    const position = heights[sensor.heightKey] / heights.speicher_mm;
-    const tankY = layout.tankTop + layout.tankHeight * (1 - position);
-    return { ...sensor, position, tankY };
+function getStorageLayout(tanks) {
+  const layout = { ...DEFAULT_LAYOUT };
+  const gap = layout.rowHeight + 11;
+  const topMargin = 8;
+  const maxSensorCount = Math.max(...tanks.map(tank => tank.sensors.length));
+  layout.extraHeight = Math.max(0, topMargin + (maxSensorCount - 1) * gap - layout.tankHeight);
+  layout.cardHeight += layout.extraHeight;
+  const minY = layout.tankTop + topMargin;
+  const bottomY = layout.tankTop + layout.tankHeight + layout.extraHeight;
+  layout.tanks = tanks.map(({ key, tankHeightMm, sensors, customSensors }) => {
+    const entries = sensors.map(({ entitaet, name, hoehe_mm }, index) => {
+      const original = !customSensors ? STORAGES[key].defaults[index].position : undefined;
+      const position = original ?? hoehe_mm / tankHeightMm;
+      const tankY = layout.tankTop + layout.tankHeight * (1 - position);
+      // Ein JSON-String bleibt in Button Card ein Textwert, auch bei Namen in Template-Syntax.
+      return { entity: entitaet, name: JSON.stringify(name ?? ""), position, tankY };
+    });
+    placeSensorLabels(entries, gap, minY, bottomY);
+    return { key, x: STORAGES[key].x, sensors: entries, customSensors };
   });
+  return layout;
+}
 
+function placeSensorLabels(sensors, gap, minY, bottomY) {
   // Bei nahen Messpunkten die Werteboxen mit Mindestabstand um die Markierungen verteilen.
   const ordered = [...sensors].sort((a, b) => a.tankY - b.tankY);
-  const gap = layout.rowHeight + 11;
   const groups = [];
   for (const [index, sensor] of ordered.entries()) {
     const group = { sensors: [sensor], y: sensor.tankY - index * gap };
@@ -179,8 +259,7 @@ function getBoilerLayout(heights) {
     groups.push(group);
   }
 
-  const minY = layout.tankTop + 8;
-  const maxY = layout.tankTop + layout.tankHeight - (ordered.length - 1) * gap;
+  const maxY = bottomY - (ordered.length - 1) * gap;
   let index = 0;
   for (const group of groups) {
     const y = Math.min(maxY, Math.max(minY, group.y));
@@ -189,7 +268,26 @@ function getBoilerLayout(heights) {
       index += 1;
     }
   }
-  return { ...layout, sensors };
+}
+
+function percentOf(pixels, total) {
+  return `${pixels / total * 100}%`;
+}
+
+function resizeActionAreas(fields, layout) {
+  const tankBottom = layout.tankTop + layout.tankHeight;
+  for (const styles of Object.values(fields)) {
+    for (const style of styles) {
+      if (Object.hasOwn(style, "top")) {
+        const y = parseFloat(style.top) / 100 * DEFAULT_LAYOUT.cardHeight;
+        style.top = percentOf(y > tankBottom ? y + layout.extraHeight : y, layout.cardHeight);
+      }
+      if (Object.hasOwn(style, "height")) {
+        const height = parseFloat(style.height) / 100 * DEFAULT_LAYOUT.cardHeight;
+        style.height = percentOf(height, layout.cardHeight);
+      }
+    }
+  }
 }
 
 class DashboardCardEditor extends HTMLElement {
@@ -200,7 +298,13 @@ class DashboardCardEditor extends HTMLElement {
       <style>
         :host { display: block; }
         p { margin: 0 0 16px; color: var(--secondary-text-color, currentColor); }
-        .heights { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 12px; }
+        fieldset { min-width: 0; margin: 0 0 16px; padding: 12px; border: 1px solid var(--divider-color, #8195a3); border-radius: 8px; }
+        legend { font-weight: 600; }
+        .tank-height { max-width: 180px; margin-bottom: 12px; }
+        .sensor { padding: 12px 0; border-top: 1px solid var(--divider-color, #8195a3); }
+        .sensor-fields { display: grid; gap: 8px 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 120px); }
+        .entity { grid-column: 1 / -1; }
+        summary { cursor: pointer; color: var(--primary-color, currentColor); }
         label { display: grid; gap: 6px; }
         input {
           box-sizing: border-box;
@@ -214,41 +318,142 @@ class DashboardCardEditor extends HTMLElement {
           border-radius: 8px;
         }
         input:invalid { border-color: var(--error-color, #c23b4f); }
+        input:placeholder-shown { border-color: var(--divider-color, #8195a3); }
+        button { margin-top: 8px; padding: 8px 12px; font: inherit; color: inherit; background: transparent; border: 1px solid var(--divider-color, #8195a3); border-radius: 8px; cursor: pointer; }
       </style>
-      <p id="height-description">Fühlerhöhen in Millimetern ab Speicherboden. 0 mm ist unten, die Speicherhöhe ist oben.</p>
-      <div class="heights" role="group" aria-label="Boilerhöhen" aria-describedby="height-description">
-        <label>Speicherhöhe (mm)<input name="speicher_mm" type="number" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
-        ${BOILER_SENSORS.map(({ heightKey, label }) => `
-          <label>${label} (mm)<input name="${heightKey}" type="number" min="0" step="1" required></label>
-        `).join("")}
-      </div>
+      <p>Fühlerhöhen in Millimetern ab Speicherboden. 0 mm ist unten, die Speicherhöhe ist oben.</p>
+      <datalist id="temperature-entities"></datalist>
+      <template id="sensor-fields">
+        <div class="sensor-fields">
+          <label class="entity">Temperatur-Entität<input name="entitaet" list="temperature-entities" pattern="[a-z0-9_]+[.][a-z0-9_]+" placeholder="sensor.beispiel" required></label>
+          <label>Name (optional)<input name="name"></label>
+          <label>Höhe (mm)<input name="hoehe_mm" type="number" min="0" step="1" placeholder="0" required></label>
+        </div>
+      </template>
+      ${Object.entries(STORAGES).map(([key, { label }]) => `
+        <fieldset id="${key}">
+          <legend>${label}</legend>
+          <label class="tank-height">Speicherhöhe (mm)<input name="speicher_mm" type="number" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
+          <p class="empty" hidden>Keine Fühler eingetragen.</p>
+          <div class="sensors"></div>
+          <details>
+            <summary>Fühler hinzufügen</summary>
+            <form><button type="submit">Hinzufügen</button></form>
+          </details>
+        </fieldset>
+      `).join("")}
     `;
-    this._inputs = Object.fromEntries([...root.querySelectorAll("input")].map(input => [input.name, input]));
-    root.addEventListener("change", event => this._changeHeight(event.target));
+    this._fields = root.getElementById("sensor-fields");
+    this._sections = Object.fromEntries(Object.keys(STORAGES).map(key => [key, root.getElementById(key)]));
+    this._tanks = {};
+    for (const [key, section] of Object.entries(this._sections)) {
+      const height = section.querySelector('[name="speicher_mm"]');
+      height.addEventListener("change", () => {
+        if (!height.reportValidity() || height.valueAsNumber === this._tanks[key].tankHeightMm) return;
+        const heightKey = `${key}_hoehen`;
+        this._save({ [heightKey]: { ...this._config[heightKey], speicher_mm: height.valueAsNumber } });
+      });
+      const form = section.querySelector("form");
+      form.prepend(this._fields.content.cloneNode(true));
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        const sensor = {
+          entitaet: form.elements.entitaet.value,
+          name: form.elements.name.value.trim(),
+          hoehe_mm: form.elements.hoehe_mm.valueAsNumber,
+        };
+        this._saveSensors(key, [...this._tanks[key].sensors, sensor]);
+        form.reset();
+        section.querySelector("details").open = false;
+        section.querySelector("summary").focus();
+      });
+    }
+  }
+
+  set hass(hass) {
+    const suggestions = Object.entries(hass?.states ?? {})
+      .filter(([id, { attributes }]) => id.startsWith("sensor.") && (
+        attributes?.device_class === "temperature" || ["°C", "°F", "K"].includes(attributes?.unit_of_measurement)
+      ))
+      .map(([id, { attributes }]) => [id, attributes.friendly_name]);
+    const signature = JSON.stringify(suggestions);
+    if (this._suggestionSignature === signature) return;
+    this._suggestionSignature = signature;
+    const options = suggestions.map(([id, name]) => {
+      const option = document.createElement("option");
+      option.value = id;
+      option.label = name ?? id;
+      return option;
+    });
+    const list = this.shadowRoot.getElementById("temperature-entities");
+    list.replaceChildren(...options);
   }
 
   setConfig(config) {
+    const entities = structuredClone(BUTTON_CONFIG.variables.entitaeten);
+    applyEntityOverrides(entities, config.entitaeten);
+    this._tanks = Object.fromEntries(Object.entries(STORAGES).map(([key, settings]) => [
+      key, getTankConfig(config, key, settings, entities[key]),
+    ]));
     this._config = config;
-    const heights = getBoilerHeights(config.boiler_hoehen);
-    this._inputs.speicher_mm.min = Math.max(1, ...BOILER_SENSORS.map(({ heightKey }) => heights[heightKey]));
-    for (const { heightKey } of BOILER_SENSORS) {
-      this._inputs[heightKey].max = heights.speicher_mm;
-    }
-    for (const [key, value] of Object.entries(heights)) {
-      this._inputs[key].value = value;
+    for (const [key, tank] of Object.entries(this._tanks)) {
+      this._renderTank(key, tank);
     }
   }
 
-  _changeHeight(input) {
-    const value = input.valueAsNumber;
-    if (!input.reportValidity()) {
-      return;
+  _renderTank(key, { tankHeightMm, sensors, customSensors }) {
+    const section = this._sections[key];
+    const height = section.querySelector('[name="speicher_mm"]');
+    height.value = tankHeightMm;
+    height.min = customSensors || key === "boiler"
+      ? sensors.reduce((max, sensor) => Math.max(max, sensor.hoehe_mm), 1)
+      : 1;
+    section.querySelector("form").elements.hoehe_mm.max = tankHeightMm;
+    section.querySelector(".empty").hidden = sensors.length > 0;
+    const list = section.querySelector(".sensors");
+    if (list.children.length !== sensors.length) {
+      list.replaceChildren(...sensors.map((_, index) => this._createSensorRow(key, index)));
     }
-    const stored = this._config.boiler_hoehen ?? {};
-    if (value === (stored[input.name] ?? BOILER_HEIGHTS[input.name])) {
-      return;
+    for (const [index, sensor] of sensors.entries()) {
+      const row = list.children[index];
+      row.querySelector('[name="entitaet"]').value = sensor.entitaet;
+      row.querySelector('[name="name"]').value = sensor.name ?? "";
+      const heightInput = row.querySelector('[name="hoehe_mm"]');
+      heightInput.value = sensor.hoehe_mm;
+      heightInput.max = tankHeightMm;
+      row.querySelector("button").setAttribute("aria-label", `Fühler ${sensor.name || sensor.entitaet} entfernen`);
     }
-    const config = { ...this._config, boiler_hoehen: { ...stored, [input.name]: value } };
+  }
+
+  _createSensorRow(key, index) {
+    const row = document.createElement("div");
+    row.className = "sensor";
+    row.append(this._fields.content.cloneNode(true));
+    row.addEventListener("change", ({ target: input }) => {
+      if (!input.reportValidity()) return;
+      const sensors = [...this._tanks[key].sensors];
+      const value = input.type === "number" ? input.valueAsNumber : input.value.trim();
+      if (sensors[index][input.name] === value) return;
+      sensors[index] = { ...sensors[index], [input.name]: value };
+      this._saveSensors(key, sensors);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Entfernen";
+    remove.addEventListener("click", () => {
+      this._saveSensors(key, this._tanks[key].sensors.filter((_, position) => position !== index));
+      this._sections[key].querySelector("summary").focus();
+    });
+    row.append(remove);
+    return row;
+  }
+
+  _saveSensors(key, sensors) {
+    this._save({ [`${key}_fuehler`]: sensors });
+  }
+
+  _save(patch) {
+    const config = { ...this._config, ...patch };
     this.setConfig(config);
     this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
   }
@@ -290,11 +495,7 @@ const BUTTON_CONFIG = {
       }
     }
   },
-  "entity": "[[[ return variables.entitaeten.boiler.temperatur_bf1; ]]]",
   "triggers_update": [
-    "[[[ return variables.entitaeten.boiler.temperatur_hf1; ]]]",
-    "[[[ return variables.entitaeten.puffer.temperatur_pf2_oben; ]]]",
-    "[[[ return variables.entitaeten.puffer.temperatur_pf1_unten; ]]]",
     "[[[ return variables.entitaeten.boiler.heizstab_leistung; ]]]",
     "[[[ return variables.entitaeten.puffer.heizanforderung; ]]]",
     "[[[ return variables.entitaeten.puffer.ueberschussbetrieb; ]]]",
@@ -302,11 +503,7 @@ const BUTTON_CONFIG = {
     "[[[ return variables.entitaeten.heizung.waermepumpe_ruecklauf; ]]]",
     "[[[ return variables.entitaeten.boiler.heizanforderung; ]]]",
     "[[[ return variables.entitaeten.boiler.ueberschussbetrieb; ]]]",
-    "[[[ return variables.entitaeten.boiler.temperatur_bf1; ]]]",
     "[[[ return variables.entitaeten.boiler.heizstab_status; ]]]",
-    "[[[ return variables.entitaeten.boiler.temperatur_hf2; ]]]",
-    "[[[ return variables.entitaeten.puffer.temperatur_hf2; ]]]",
-    "[[[ return variables.entitaeten.puffer.temperatur_hf1; ]]]",
     "[[[ return variables.entitaeten.heizung.heizkreis_vorlauf_soll; ]]]",
     "[[[ return variables.entitaeten.puffer.heizstab_leistung; ]]]",
     "[[[ return variables.entitaeten.puffer.heizstab_status; ]]]",
@@ -337,28 +534,37 @@ const BUTTON_CONFIG = {
       "/* Ungültige Messwerte bleiben ungültig */ const addOffset = (value, offset) =>",
       "  Number.isFinite(value) ? value + offset : value;",
       "const ids = variables.entitaeten;",
-      "const boilerLayout = variables.boiler_layout;",
-      "const boilerReadings = new Map();",
-      "for (const { entityKey, position } of boilerLayout.sensors) {",
-      "  const raw = states[ids.boiler[entityKey]]?.state;",
-      "  const value = Number.parseFloat(String(raw).trim().replace(',', '.').replace(/[^\\d.-]/g, ''));",
-      "  const offset = entityKey === 'temperatur_hf2' ? offsetBoilerHF2 : 0;",
-      "  if (!boilerReadings.has(position)) boilerReadings.set(position, []);",
-      "  if (Number.isFinite(value)) boilerReadings.get(position).push(addOffset(value, offset));",
-      "}",
-      "// Fühler auf derselben Höhe ergeben gemeinsam einen Messpunkt.",
-      "const boilerPoints = Array.from(boilerReadings, ([position, values]) => ({",
-      "  position,",
-      "  temperature: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null",
-      "})).sort((a, b) => a.position - b.position);",
+      "const storageLayout = variables.storage_layout;",
+      "const readNumber = id => {",
+      "  const value = String(states[id]?.state ?? '').trim();",
+      "  return value ? Number(value.replace(',', '.')) : NaN;",
+      "};",
+      "const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;",
+      "const tanks = storageLayout.tanks.map(tank => {",
+      "  const offset = tank.key === 'boiler' ? offsetBoilerHF2 : offsetPufferHF2;",
+      "  const grouped = new Map();",
+      "  const sensors = tank.sensors.map(sensor => {",
+      "    const { entity, position } = sensor;",
+      "    const temperature = addOffset(readNumber(entity), entity === ids[tank.key].temperatur_hf2 ? offset : 0);",
+      "    if (!grouped.has(position)) grouped.set(position, []);",
+      "    if (Number.isFinite(temperature)) grouped.get(position).push(temperature);",
+      "    return { ...sensor, temperature };",
+      "  });",
+      "  // Fühler auf derselben Höhe ergeben gemeinsam einen Messpunkt.",
+      "  const points = Array.from(grouped, ([position, values]) => ({",
+      "    position, temperature: values.length ? mean(values) : null",
+      "  })).sort((a, b) => a.position - b.position);",
+      "  return { ...tank, sensors, points };",
+      "});",
       "const themedSvg = (()=>{",
       "",
       "",
-      "const gradients = [",
+      "const gradients = tanks.map(({ points, customSensors }) => {",
+      "  const measured = points.filter(point => Number.isFinite(point.temperature));",
+      "  if (!measured.length) return '';",
       "",
-      "(()=>{",
       "  // =====================================================",
-      "  // BOILER – PCHIP V2.0 / STUFENLOSER GLT-VERLAUF",
+      "  // PCHIP / STUFENLOSER GLT-VERLAUF",
       "  //",
       "  // Monotone kubische Interpolation (PCHIP/Fritsch-Carlson)",
       "  // für einen besonders glatten Temperaturverlauf.",
@@ -475,7 +681,7 @@ const BUTTON_CONFIG = {
       "  // nächsten realen Fühlers.",
       "  // =====================================================",
       "",
-      "  const sensorPoints = boilerPoints.map(({ position, temperature }) => ({",
+      "  const sensorPoints = (customSensors ? measured : points).map(({ position, temperature }) => ({",
       "    position, temperature: temperature ?? lerp(tMin, tMax, position)",
       "  }));",
       "  const bottom = sensorPoints[0];",
@@ -641,374 +847,10 @@ const BUTTON_CONFIG = {
       "    to top,",
       "    ${stops.join(',')}",
       "  )`;",
-      "})(),",
+      "});",
       "",
-      "(()=>{",
-      "  // =====================================================",
-      "  // PUFFER – PCHIP V2.0 / STUFENLOSER GLT-VERLAUF",
-      "  //",
-      "  // Monotone kubische Interpolation (PCHIP/Fritsch-Carlson)",
-      "  // für einen besonders glatten Temperaturverlauf.",
-      "  //",
-      "  // 31 GLT-Farbpunkte:",
-      "  // Blau → Türkis → Grün → Gelbgrün →",
-      "  // Gelb → Orange → Rot",
-      "  // =====================================================",
-      "",
-      "  const tMin = 25;",
-      "  const tMax = 55;",
-      "",
-      "  // =====================================================",
-      "  // SENSOREN",
-      "  // =====================================================",
-      "",
-      "  const PF2 = states[",
-      "    ids.puffer.temperatur_pf2_oben",
-      "  ]?.state;",
-      "",
-      "  const HF2 = states[",
-      "    ids.puffer.temperatur_hf2",
-      "  ]?.state;",
-      "",
-      "  const HF1 = states[",
-      "    ids.puffer.temperatur_hf1",
-      "  ]?.state;",
-      "",
-      "  const PF1 = states[",
-      "    ids.puffer.temperatur_pf1_unten",
-      "  ]?.state;",
-      "",
-      "  // =====================================================",
-      "  // REALE POSITIONEN DER FÜHLER",
-      "  // =====================================================",
-      "",
-      "  const posPF1 = 0.10;",
-      "  const posHF1 = 0.36446280991735536;",
-      "  const posHF2 = 0.6311294765840221;",
-      "  const posPF2 = 0.90;",
-      "",
-      "  // =====================================================",
-      "  // HILFSFUNKTIONEN",
-      "  // =====================================================",
-      "",
-      "  const toNum = (value) => {",
-      "    if (",
-      "      value === null ||",
-      "      value === undefined ||",
-      "      value === '' ||",
-      "      value === 'unknown' ||",
-      "      value === 'unavailable' ||",
-      "      value === 'none'",
-      "    ) {",
-      "      return null;",
-      "    }",
-      "",
-      "    const cleaned = String(value)",
-      "      .trim()",
-      "      .replace(',', '.')",
-      "      .replace(/[^\\d.-]/g, '');",
-      "",
-      "    const number = parseFloat(cleaned);",
-      "",
-      "    return Number.isFinite(number)",
-      "      ? number",
-      "      : null;",
-      "  };",
-      "",
-      "  const clamp = (value, min, max) => {",
-      "    return Math.min(Math.max(value, min), max);",
-      "  };",
-      "",
-      "  const lerp = (start, end, factor) => {",
-      "    return start + (end - start) * factor;",
-      "  };",
-      "",
-      "  const fallbackTemperature = (position) => {",
-      "    return lerp(tMin, tMax, clamp(position, 0, 1));",
-      "  };",
-      "",
-      "  const tPF1 =",
-      "    toNum(PF1) ??",
-      "    fallbackTemperature(posPF1);",
-      "",
-      "  const tHF1 =",
-      "    toNum(HF1) ??",
-      "    fallbackTemperature(posHF1);",
-      "",
-      "  const tHF2 =",
-      "    addOffset(toNum(HF2), offsetPufferHF2) ??",
-      "    fallbackTemperature(posHF2);",
-      "",
-      "  const tPF2 =",
-      "    toNum(PF2) ??",
-      "    fallbackTemperature(posPF2);",
-      "",
-      "  // =====================================================",
-      "  // 31-PUNKT-GLT-FARBPALETTE",
-      "  // =====================================================",
-      "",
-      "  const colorAnchors = [",
-      "    { temperature: 25, color: [  0,  70, 200] },",
-      "    { temperature: 26, color: [  0,  81, 202] },",
-      "    { temperature: 27, color: [  0, 108, 207] },",
-      "    { temperature: 28, color: [  0, 142, 213] },",
-      "    { temperature: 29, color: [  0, 169, 218] },",
-      "    { temperature: 30, color: [  0, 180, 220] },",
-      "    { temperature: 31, color: [  0, 180, 207] },",
-      "    { temperature: 32, color: [  0, 180, 172] },",
-      "    { temperature: 33, color: [  0, 180, 128] },",
-      "    { temperature: 34, color: [  0, 180,  93] },",
-      "    { temperature: 35, color: [  0, 180,  80] },",
-      "    { temperature: 36, color: [ 14, 183,  72] },",
-      "    { temperature: 37, color: [ 52, 190,  52] },",
-      "    { temperature: 38, color: [ 98, 200,  28] },",
-      "    { temperature: 39, color: [136, 207,   8] },",
-      "    { temperature: 40, color: [150, 210,   0] },",
-      "    { temperature: 41, color: [159, 211,   0] },",
-      "    { temperature: 42, color: [183, 213,   0] },",
-      "    { temperature: 43, color: [212, 217,   0] },",
-      "    { temperature: 44, color: [236, 219,   0] },",
-      "    { temperature: 45, color: [245, 220,   0] },",
-      "    { temperature: 46, color: [246, 211,   0] },",
-      "    { temperature: 47, color: [248, 187,   0] },",
-      "    { temperature: 48, color: [252, 158,   0] },",
-      "    { temperature: 49, color: [254, 134,   0] },",
-      "    { temperature: 50, color: [255, 125,   0] },",
-      "    { temperature: 51, color: [253, 115,   2] },",
-      "    { temperature: 52, color: [248,  90,   7] },",
-      "    { temperature: 53, color: [242,  60,  13] },",
-      "    { temperature: 54, color: [237,  35,  18] },",
-      "    { temperature: 55, color: [235,  25,  20] }",
-      "  ];",
-      "",
-      "  const colorScale = (temperature) => {",
-      "    const temp = clamp(temperature, tMin, tMax);",
-      "",
-      "    for (",
-      "      let index = 0;",
-      "      index < colorAnchors.length - 1;",
-      "      index++",
-      "    ) {",
-      "      const lower = colorAnchors[index];",
-      "      const upper = colorAnchors[index + 1];",
-      "",
-      "      if (",
-      "        temp >= lower.temperature &&",
-      "        temp <= upper.temperature",
-      "      ) {",
-      "        const factor =",
-      "          (",
-      "            temp - lower.temperature",
-      "          ) /",
-      "          (",
-      "            upper.temperature -",
-      "            lower.temperature",
-      "          );",
-      "",
-      "        const red = Math.round(",
-      "          lerp(lower.color[0], upper.color[0], factor)",
-      "        );",
-      "",
-      "        const green = Math.round(",
-      "          lerp(lower.color[1], upper.color[1], factor)",
-      "        );",
-      "",
-      "        const blue = Math.round(",
-      "          lerp(lower.color[2], upper.color[2], factor)",
-      "        );",
-      "",
-      "        return `rgb(${red}, ${green}, ${blue})`;",
-      "      }",
-      "    }",
-      "",
-      "    const last =",
-      "      colorAnchors[colorAnchors.length - 1].color;",
-      "",
-      "    return `rgb(${last[0]}, ${last[1]}, ${last[2]})`;",
-      "  };",
-      "",
-      "",
-      "  // =====================================================",
-      "  // MESSPUNKTE",
-      "  //",
-      "  // Die Randpunkte übernehmen die Temperatur des jeweils",
-      "  // nächsten realen Fühlers.",
-      "  // =====================================================",
-      "",
-      "  const sensorPoints = [",
-      "    { position: 0.00,   temperature: tPF1 },",
-      "    { position: posPF1, temperature: tPF1 },",
-      "    { position: posHF1, temperature: tHF1 },",
-      "    { position: posHF2, temperature: tHF2 },",
-      "    { position: posPF2, temperature: tPF2 },",
-      "    { position: 1.00,   temperature: tPF2 }",
-      "  ];",
-      "",
-      "  // =====================================================",
-      "  // PCHIP / MONOTONE KUBISCHE INTERPOLATION",
-      "  //",
-      "  // Vorteile:",
-      "  // - keine sichtbaren Knicke an den Fühlern",
-      "  // - keine unkontrollierten Überschwinger",
-      "  // - Schichtung bleibt formtreu",
-      "  // =====================================================",
-      "",
-      "  const createPchip = (points) => {",
-      "    const x = points.map(point => point.position);",
-      "    const y = points.map(point => point.temperature);",
-      "    const count = points.length;",
-      "",
-      "    const h = [];",
-      "    const delta = [];",
-      "",
-      "    for (let i = 0; i < count - 1; i++) {",
-      "      h[i] = x[i + 1] - x[i];",
-      "      delta[i] = (y[i + 1] - y[i]) / h[i];",
-      "    }",
-      "",
-      "    const slope = new Array(count).fill(0);",
-      "",
-      "    // Innere Steigungen nach Fritsch-Carlson",
-      "    for (let i = 1; i < count - 1; i++) {",
-      "      if (",
-      "        delta[i - 1] === 0 ||",
-      "        delta[i] === 0 ||",
-      "        Math.sign(delta[i - 1]) !== Math.sign(delta[i])",
-      "      ) {",
-      "        slope[i] = 0;",
-      "      } else {",
-      "        const w1 = 2 * h[i] + h[i - 1];",
-      "        const w2 = h[i] + 2 * h[i - 1];",
-      "",
-      "        slope[i] =",
-      "          (w1 + w2) /",
-      "          (",
-      "            w1 / delta[i - 1] +",
-      "            w2 / delta[i]",
-      "          );",
-      "      }",
-      "    }",
-      "",
-      "    // Randsteigung unten",
-      "    slope[0] =",
-      "      (",
-      "        (2 * h[0] + h[1]) * delta[0] -",
-      "        h[0] * delta[1]",
-      "      ) /",
-      "      (",
-      "        h[0] + h[1]",
-      "      );",
-      "",
-      "    if (Math.sign(slope[0]) !== Math.sign(delta[0])) {",
-      "      slope[0] = 0;",
-      "    } else if (",
-      "      Math.sign(delta[0]) !== Math.sign(delta[1]) &&",
-      "      Math.abs(slope[0]) > Math.abs(3 * delta[0])",
-      "    ) {",
-      "      slope[0] = 3 * delta[0];",
-      "    }",
-      "",
-      "    // Randsteigung oben",
-      "    const last = count - 1;",
-      "",
-      "    slope[last] =",
-      "      (",
-      "        (2 * h[last - 1] + h[last - 2]) *",
-      "        delta[last - 1] -",
-      "        h[last - 1] * delta[last - 2]",
-      "      ) /",
-      "      (",
-      "        h[last - 1] + h[last - 2]",
-      "      );",
-      "",
-      "    if (",
-      "      Math.sign(slope[last]) !==",
-      "      Math.sign(delta[last - 1])",
-      "    ) {",
-      "      slope[last] = 0;",
-      "    } else if (",
-      "      Math.sign(delta[last - 1]) !==",
-      "      Math.sign(delta[last - 2]) &&",
-      "      Math.abs(slope[last]) >",
-      "      Math.abs(3 * delta[last - 1])",
-      "    ) {",
-      "      slope[last] = 3 * delta[last - 1];",
-      "    }",
-      "",
-      "    return (position) => {",
-      "      const p = clamp(position, x[0], x[last]);",
-      "",
-      "      let interval = last - 1;",
-      "",
-      "      for (let i = 0; i < last; i++) {",
-      "        if (p >= x[i] && p <= x[i + 1]) {",
-      "          interval = i;",
-      "          break;",
-      "        }",
-      "      }",
-      "",
-      "      const width = h[interval];",
-      "      const t = (p - x[interval]) / width;",
-      "",
-      "      const t2 = t * t;",
-      "      const t3 = t2 * t;",
-      "",
-      "      const h00 = 2 * t3 - 3 * t2 + 1;",
-      "      const h10 = t3 - 2 * t2 + t;",
-      "      const h01 = -2 * t3 + 3 * t2;",
-      "      const h11 = t3 - t2;",
-      "",
-      "      const value =",
-      "        h00 * y[interval] +",
-      "        h10 * width * slope[interval] +",
-      "        h01 * y[interval + 1] +",
-      "        h11 * width * slope[interval + 1];",
-      "",
-      "      // Sicherheit: keine unrealistischen Werte ausserhalb",
-      "      // des Temperaturbereichs ausgeben.",
-      "      return clamp(value, tMin, tMax);",
-      "    };",
-      "  };",
-      "",
-      "  const temperatureAtPosition =",
-      "    createPchip(sensorPoints);",
-      "",
-      "",
-      "  // =====================================================",
-      "  // EXTREM FEINER CSS-VERLAUF",
-      "  //",
-      "  // 480 Stützstellen sind optisch praktisch stufenlos.",
-      "  // =====================================================",
-      "",
-      "  const steps = 480;",
-      "  const stops = [];",
-      "",
-      "  for (",
-      "    let step = 0;",
-      "    step <= steps;",
-      "    step++",
-      "  ) {",
-      "    const position = step / steps;",
-      "    const temperature =",
-      "      temperatureAtPosition(position);",
-      "",
-      "    stops.push(",
-      "      `${colorScale(temperature)} ${(position * 100).toFixed(3)}%`",
-      "    );",
-      "  }",
-      "",
-      "  return `linear-gradient(",
-      "    to top,",
-      "    ${stops.join(',')}",
-      "  )`;",
-      "})()];",
-      "",
-      "const indices = [",
-      "",
-      "(()=>{",
-      "  const measured = boilerPoints.filter(point => Number.isFinite(point.temperature));",
-      "  if (measured.length < 2) return '—';",
-      "",
+      "const averageOverHeight = measured => {",
+      "  if (measured.length < 2) return NaN;",
       "  // Mittlere Temperatur über die Speicherhöhe. An den Rändern gilt der nächste Messwert.",
       "  let previous = measured[0];",
       "  let average = previous.position * previous.temperature;",
@@ -1016,41 +858,20 @@ const BUTTON_CONFIG = {
       "    average += (point.position - previous.position) * (point.temperature + previous.temperature) / 2;",
       "    previous = point;",
       "  }",
-      "  average += (1 - previous.position) * previous.temperature;",
-      "",
-      "  let pct = (average - 25) / (55 - 25) * 100;",
-      "  pct = Math.min(100, Math.max(0, pct));",
-      "",
-      "  return Math.round(pct) + ' %';",
-      "})(),",
-      "",
-      "(()=>{",
-      "  const oben     = parseFloat(states[ids.puffer.temperatur_pf2_oben]?.state);",
-      "  const boiler2 = addOffset(",
-      "    parseFloat(states[ids.puffer.temperatur_hf2]?.state),",
-      "    offsetPufferHF2",
-      "  );",
-      "  const mitte    = parseFloat(states[ids.puffer.temperatur_hf1]?.state);",
-      "  const unten    = parseFloat(states[ids.puffer.temperatur_pf1_unten]?.state);",
-      "  const soll     = parseFloat(states[ids.heizung.heizkreis_vorlauf_soll]?.state);",
-      "",
-      "  const voll = 55;",
-      "if (!Number.isFinite(soll) || soll >= voll) return \"—\";",
-      "",
-      "  if (isNaN(oben) || isNaN(boiler2) || isNaN(mitte) || isNaN(unten) || isNaN(soll))",
-      "    return '—';",
-      "",
-      "  const t_eff =",
-      "    (oben * 0.25) +",
-      "    (boiler2 * 0.25) +",
-      "    (mitte * 0.25) +",
-      "    (unten * 0.25);",
-      "",
-      "  let pct = (t_eff - soll) / (voll - soll) * 100;",
-      "  pct = Math.min(100, Math.max(0, pct));",
-      "",
-      "  return Math.round(pct) + ' %';",
-      "})()];",
+      "  return average + (1 - previous.position) * previous.temperature;",
+      "};",
+      "const indices = tanks.map(({ key, sensors, points, customSensors }) => {",
+      "  const lower = key === 'boiler' ? 25 : readNumber(ids.heizung.heizkreis_vorlauf_soll);",
+      "  const upper = 55;",
+      "  if (!Number.isFinite(lower) || lower >= upper) return '—';",
+      "  // Die bisherige Pufferkonfiguration gewichtet ihre vier Fühler gleich.",
+      "  const average = key === 'puffer' && !customSensors",
+      "    ? mean(sensors.map(sensor => sensor.temperature))",
+      "    : averageOverHeight(points.filter(point => Number.isFinite(point.temperature)));",
+      "  if (!Number.isFinite(average)) return '—';",
+      "  const pct = (average - lower) / (upper - lower) * 100;",
+      "  return Math.round(Math.min(100, Math.max(0, pct))) + ' %';",
+      "});",
       "",
       "const pumpSvg = ((entity)=>{",
       "",
@@ -1112,58 +933,51 @@ const BUTTON_CONFIG = {
       "return (function draw(states,gradients,indices,pumpSvg){",
       " const valid=v=>v!=null&&!['','unknown','unavailable','none'].includes(String(v).trim());",
       " const raw=id=>states[id]?.state;",
-      " const offsets = {",
-      "   [ids.boiler.temperatur_hf2]: offsetBoilerHF2,",
-      "   [ids.puffer.temperatur_hf2]: offsetPufferHF2",
-      " };",
-      " const num = id => valid(raw(id))",
-      "   ? addOffset(Number(String(raw(id)).replace(',', '.')), offsets[id] ?? 0)",
-      "   : NaN;",
       " const fmt=n=>Number.isFinite(n)?n.toFixed(1).replace('.',','):'—';",
       " const esc=s=>String(s).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&apos;'}[c]));",
       " const text=(x,y,v,size=14,color='#243C4A',weight=400,anchor='start')=>`<text x=\"${x}\" y=\"${y}\" font-size=\"${size <= 14 ? size + 1.5 : size <= 16 ? size + 1 : size}\" fill=\"${color}\" font-weight=\"${weight}\" text-anchor=\"${anchor}\">${esc(v)}</text>`;",
       " const box=(x,y,w,ht,fill='#FFFFFF',radius=18)=>`<rect x=\"${x}\" y=\"${y}\" width=\"${w}\" height=\"${ht}\" rx=\"${radius}\" fill=\"${fill}\" stroke=\"#DCE5EB\"/>`;",
-      " const boilerRows = boilerLayout.sensors.map(({ label, entityKey, position, labelY }) =>",
-      "   [label, ids.boiler[entityKey], 1 - position, labelY]);",
-      " const cfg=[",
-      " {x:24,name:'WARMWASSER',sub:'Boiler · Trinkwarmwasser',key:'boiler',rows:boilerRows},",
-      " {x:512,name:'HEIZPUFFER',sub:'Pufferspeicher · Heizungswasser',key:'puffer',rows:[['PF2 · oben',ids.puffer.temperatur_pf2_oben,.1],['HF2',ids.puffer.temperatur_hf2,0.1+(47.9-35.7)/(72-35.7)*0.8],['HF1',ids.puffer.temperatur_hf1,0.1+(60-35.7)/(72-35.7)*0.8],['PF1 · unten',ids.puffer.temperatur_pf1_unten,.9]]}",
-      " ];",
       " const colorStops=css=>[...css.matchAll(/(rgb\\([^)]+\\))\\s+([\\d.]+)%/g)].map(m=>`<stop offset=\"${m[2]}%\" stop-color=\"${m[1]}\"/>`).join('');",
       " let defs='';",
-      " cfg.forEach((c,i)=>{const available=c.rows.some(r=>Number.isFinite(num(r[1])));defs+=`<linearGradient id=\"storage-modern-${i}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">${available?colorStops(gradients[i]):'<stop offset=\"0%\" stop-color=\"#A4AFB8\"/><stop offset=\"100%\" stop-color=\"#C9D1D7\"/>'}</linearGradient>`;});",
+      " gradients.forEach((gradient,i)=>{defs+=`<linearGradient id=\"storage-modern-${i}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">${gradient?colorStops(gradient):'<stop offset=\"0%\" stop-color=\"#A4AFB8\"/><stop offset=\"100%\" stop-color=\"#C9D1D7\"/>'}</linearGradient>`;});",
       " defs+='<linearGradient id=\"storage-scale\"><stop offset=\"0%\" stop-color=\"#0046C8\"/><stop offset=\"25%\" stop-color=\"#00B4AB\"/><stop offset=\"45%\" stop-color=\"#48BE34\"/><stop offset=\"65%\" stop-color=\"#EADB00\"/><stop offset=\"82%\" stop-color=\"#FF7D00\"/><stop offset=\"100%\" stop-color=\"#E81414\"/></linearGradient>';",
-      " const cardHeight = boilerLayout.cardHeight;",
+      " const { cardHeight, extraHeight, tankTop: ty, tankHeight: th, rowHeight, rowOffset } = storageLayout;",
       " let svg=`<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1000\" height=\"${cardHeight}\" viewBox=\"0 0 1000 ${cardHeight}\" style=\"display:block;width:100%;height:auto\" role=\"img\" aria-label=\"Warmwasser und Heizpuffer\"><defs>${defs}</defs><rect width=\"1000\" height=\"${cardHeight}\" rx=\"24\" fill=\"#EFF4F7\"/><g font-family=\"Arial, sans-serif\">`;",
       " svg+=text(26,40,'SPEICHER & WARMWASSER',25,'#243C4A',700)+text(26,64,'Temperaturen · Ladezustand · Zirkulation',13,'#738897');",
       " const statusCodes={'0':['Bereitschaft','#188E65'],'1':['Heizen','#D88337'],'2':['Backup-Heizen','#D88337'],'3':['Temperatur erreicht','#188E65'],'4':['Kein Signal','#C23B4F'],'6':['Gesperrt / Pause','#738897']};",
-      " cfg.forEach((c,i)=>{",
-      "  const tank = ids[c.key];",
-      "  const x=c.x,req=raw(tank.heizanforderung),pv=raw(tank.ueberschussbetrieb);",
+      " tanks.forEach(({ key, x, sensors, customSensors },i)=>{",
+      "  const tank = ids[key];",
+      "  const name = key === 'boiler' ? 'WARMWASSER' : 'HEIZPUFFER';",
+      "  const subtitle = key === 'boiler' ? 'Boiler · Trinkwarmwasser' : 'Pufferspeicher · Heizungswasser';",
+      "  const req=raw(tank.heizanforderung),pv=raw(tank.ueberschussbetrieb);",
       " const surplus=['heating','cooling'].includes(pv)?'on':pv==='off'?'off':undefined;",
       "  const charging=req==='on'||surplus==='on';",
       "  const mode=charging?(req==='on'&&surplus==='on'?'Anforderung + Überschuss':surplus==='on'?'Überschussbetrieb':'Heizanforderung'):req==='off'&&surplus==='off'?'Keine Ladeanforderung':'Status nicht verfügbar';",
-      "  svg+=box(x,92,464,640)+text(x+22,124,c.name,17,'#243C4A',700)+text(x+22,146,c.sub,12,'#738897');",
+      "  svg+=box(x,92,464,640+extraHeight)+text(x+22,124,name,17,'#243C4A',700)+text(x+22,146,subtitle,12,'#738897');",
       "  svg+=box(x+20,163,424,38,charging?'#EAF7F0':'#F5F8FA',10)+text(x+35,188,mode,14,charging?'#188E65':'#738897',600);",
       "  svg+=text(x+22,226,'TEMPERATURSCHICHTUNG',10,'#83939F',700)+text(x+424,226,'LADEINDEX  '+indices[i],17,'#426E86',700,'end');",
-      "  const { tankTop: ty, tankHeight: th, rowHeight, rowOffset } = boilerLayout;",
       "  const tx=x+35,tw=156,radius=48;",
       "  svg+=`<rect x=\"${tx}\" y=\"${ty}\" width=\"${tw}\" height=\"${th}\" rx=\"${radius}\" fill=\"url(#storage-modern-${i})\" stroke=\"#8195A3\" stroke-width=\"2\"/><path d=\"M${tx+12} ${ty+48} V${ty+th-48}\" stroke=\"#FFFFFF\" stroke-opacity=\"0.4\" stroke-width=\"4\" stroke-linecap=\"round\"/><ellipse cx=\"${tx+tw/2}\" cy=\"${ty+30}\" rx=\"67\" ry=\"19\" fill=\"#FFFFFF\" fill-opacity=\"0.17\"/><path d=\"M${tx+15} ${ty+th-28} Q${tx+tw/2} ${ty+th-3} ${tx+tw-15} ${ty+th-28}\" fill=\"none\" stroke=\"#243C4A\" stroke-opacity=\"0.14\" stroke-width=\"2\"/>`;",
-      "  c.rows.forEach(([label,id,pos,labelY])=>{",
-      "   const sy=ty+th*pos,cy=labelY??sy;",
-      "   const cornerY = c.key === 'boiler' ? Math.max(0, radius - Math.min(sy - ty, ty + th - sy)) : 0;",
+      "  if (!sensors.length) svg+=text(x+236,ty+35,'Keine Fühler eingetragen',13,'#738897');",
+      "  sensors.forEach(({ entity, name, temperature, tankY: sy, labelY: cy })=>{",
+      "   const glyphs = Array.from(JSON.parse(name) || states[entity]?.attributes?.friendly_name || entity);",
+      "   const label = glyphs.length > 24 ? glyphs.slice(0, 23).join('') + '…' : glyphs.join('');",
+      "   const cornerY = key === 'puffer' && !customSensors ? 0 : Math.max(0, radius - Math.min(sy - ty, ty + th - sy));",
       "   const markerX = tx + tw - 4 - radius + Math.sqrt(radius ** 2 - cornerY ** 2);",
       "   svg+=`<path d=\"M${markerX} ${sy} H${x+209} L${x+224} ${cy}\" fill=\"none\" stroke=\"#B8C7D1\" stroke-width=\"1.3\"/><circle cx=\"${markerX}\" cy=\"${sy}\" r=\"3\" fill=\"#FFFFFF\" stroke=\"#8399A8\"/>`;",
-      "   svg+=box(x+224,cy-rowOffset,215,rowHeight,'#F7FAFC',10)+text(x+236,cy-7,label,10,'#738897',600)+text(x+424,cy+11,fmt(num(id))+' °C',21,'#243C4A',700,'end');",
+      "   svg+=box(x+224,cy-rowOffset,215,rowHeight,'#F7FAFC',10)+text(x+236,cy-7,label,10,'#738897',600)+text(x+424,cy+11,fmt(temperature)+' °C',21,'#243C4A',700,'end');",
       "  });",
       "  svg+=text(x+113,582,'25 °C  →  55 °C',11,'#83939F',400,'middle');",
+      "  svg+=`<g transform=\"translate(0 ${extraHeight})\">`;",
       "  svg+=box(x+20,593,424,36,'#F5F8FA',9);",
-      "  const vl=charging?fmt(num(ids.heizung.waermepumpe_vorlauf))+' °C':'—',rl=charging?fmt(num(ids.heizung.waermepumpe_ruecklauf))+' °C':'—';",
+      "  const vl=charging?fmt(readNumber(ids.heizung.waermepumpe_vorlauf))+' °C':'—',rl=charging?fmt(readNumber(ids.heizung.waermepumpe_ruecklauf))+' °C':'—';",
       "  svg+=text(x+34,616,'WP-Vorlauf  '+vl,13,'#B15662',600)+text(x+427,616,'Rücklauf  '+rl,13,'#387EA6',600,'end');",
       "  const status=raw(tank.heizstab_status),[desc,col]=statusCodes[status]||[valid(status)?'Status '+status:'Nicht verfügbar','#738897'];",
       "  const powerId=tank.heizstab_leistung,power=valid(raw(powerId))?String(raw(powerId))+' '+(states[powerId]?.attributes?.unit_of_measurement||'W'):'—';",
       "  svg+=box(x+20,643,424,65,'#F7FAFC',12)+text(x+35,665,'ELEKTROHEIZSTAB',10,'#738897',700)+text(x+35,690,desc,16,col,600)+text(x+424,686,power,21,'#243C4A',700,'end');",
+      "  svg+='</g>';",
       " });",
+      " svg+=`<g transform=\"translate(0 ${extraHeight})\">`;",
       " svg+=box(24,750,584,302)+text(46,781,'BWW-ZIRKULATION',15,'#526978',700);",
       " const nested=pumpSvg.replace(/<svg\\b/,'<svg x=\"42\" y=\"799\" width=\"144\" height=\"221\"').replace(/style=\"display:block;width:100%;height:auto\"/,'');",
       " svg+=nested+text(216,832,'Warmwasser auf Abruf',20,'#243C4A',700)+text(216,860,'Zirkulationspumpe bei Bedarf',14,'#738897')+text(216,883,'für 10 Minuten einschalten.',14,'#738897');",
@@ -1173,7 +987,7 @@ const BUTTON_CONFIG = {
       " svg+=text(650,882,'Der Verlauf zeigt die berechnete',13,'#526978')+text(650,904,'Temperaturverteilung im Speicher.',13,'#526978');",
       " svg+=text(650,943,'Der Ladeindex ist temperaturbasiert.',13,'#526978')+text(650,965,'Er beschreibt keinen Wasserfüllstand.',13,'#526978');",
       " svg+=text(650,1007,'Fehlende Werte werden als „—“ gezeigt.',11,'#83939F');",
-      " return svg+'</g></svg>';",
+      " return svg+'</g></g></svg>';",
       "})(states,gradients,indices,pumpSvg);",
       "",
       "",
@@ -1262,391 +1076,6 @@ const BUTTON_CONFIG = {
             }
           ]
         }
-      }
-    },
-    "sensor_0": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.boiler.temperatur_hf2; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
-      }
-    },
-    "sensor_1": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.boiler.temperatur_bf1; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
-      }
-    },
-    "sensor_3": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.boiler.temperatur_hf1; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
-      }
-    },
-    "sensor_4": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.puffer.temperatur_pf2_oben; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
-      }
-    },
-    "sensor_5": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.puffer.temperatur_hf2; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
-      }
-    },
-    "sensor_6": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.puffer.temperatur_hf1; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
-      }
-    },
-    "sensor_7": {
-      "card": {
-        "type": "custom:button-card",
-        "entity": "[[[ return variables.entitaeten.puffer.temperatur_pf1_unten; ]]]",
-        "show_name": false,
-        "show_icon": false,
-        "show_state": false,
-        "tap_action": {
-          "action": "more-info"
-        },
-        "hold_action": {
-          "action": "none"
-        },
-        "styles": {
-          "card": [
-            {
-              "width": "100%"
-            },
-            {
-              "height": "100%"
-            },
-            {
-              "background": "transparent"
-            },
-            {
-              "border": "none"
-            },
-            {
-              "padding": 0
-            },
-            {
-              "box-shadow": "none"
-            },
-            {
-              "position": "absolute"
-            },
-            {
-              "inset": 0
-            },
-            {
-              "pointer-events": "auto"
-            },
-            {
-              "cursor": "pointer"
-            }
-          ]
-        },
-        "extra_styles": [
-          ":host { display:block !important; position:relative; width:100% !important; max-width:none !important; height:100% !important; pointer-events:auto !important; }",
-          "#aspect-ratio { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; }",
-          "#card { display:block !important; position:absolute !important; inset:0; width:100% !important; height:100% !important; padding:0 !important; pointer-events:auto !important; }",
-          "#container { width:100%; height:100%; }"
-        ].join("\n")
       }
     },
     "sensor_8": {
@@ -2277,191 +1706,6 @@ const BUTTON_CONFIG = {
         },
         {
           "z-index": 2
-        }
-      ],
-      "sensor_0": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "35.55%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
-        }
-      ],
-      "sensor_1": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "35.55%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
-        }
-      ],
-      "sensor_3": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "35.55%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
-        }
-      ],
-      "sensor_4": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "84.35%"
-        },
-        {
-          "top": "25.601851851851855%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
-        }
-      ],
-      "sensor_5": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "84.35%"
-        },
-        {
-          "top": "33.31943169064381%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
-        }
-      ],
-      "sensor_6": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "84.35%"
-        },
-        {
-          "top": "40.97375267829813%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
-        }
-      ],
-      "sensor_7": [
-        {
-          "position": "absolute"
-        },
-        {
-          "left": "84.35%"
-        },
-        {
-          "top": "48.56481481481482%"
-        },
-        {
-          "width": "21.5%"
-        },
-        {
-          "height": "4.351851851851852%"
-        },
-        {
-          "transform": "translate(-50%, -50%)"
-        },
-        {
-          "z-index": 2
-        },
-        {
-          "pointer-events": "auto"
-        },
-        {
-          "z-index": 5
         }
       ],
       "sensor_8": [
