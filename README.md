@@ -28,21 +28,27 @@ Die übrigen Zuordnungen kannst du nach Bedarf aus [example.yaml](example.yaml) 
 
 Die Schaltfläche für die Warmwasserzirkulation ruft das unter `zirkulation.startskript` zugeordnete `script.*` auf. `zirkulation.pumpe_relais` liefert den Pumpenstatus. Lege das Skript in Home Assistant an oder verwende ein bestehendes Skript, das die Pumpe wie gewünscht steuert.
 
-## Fühlerhöhen am Boiler einstellen
+## Temperaturfühler verwalten
 
-Öffne im Dashboard **Dashboard bearbeiten → Karte bearbeiten**. Trage im visuellen Editor die Innenhöhe des Speichers und die Höhen von **HF2**, **BF1** und **HF1** in Millimetern ein. Miss die Fühlerhöhen ab Speicherboden. Bei **0 mm** liegt der Fühler unten, bei **Speicherhöhe** ganz oben. Die Vorschau zeigt die neuen Positionen, sobald du ein Feld verlässt oder die Eingabe bestätigst.
+Öffne **Dashboard bearbeiten → Karte bearbeiten**. Unter **Boiler** und **Pufferspeicher** kannst du jeweils die Innenhöhe des Speichers einstellen. Über **Fühler hinzufügen** wählst du eine vorhandene Temperatur-Entität und gibst ihre Höhe und optional einen Anzeigenamen ein. **Entfernen** nimmt den Fühler aus der Karte. Du kannst Entität, Namen und Höhe jederzeit direkt im Editor ändern.
 
-Dieselben Werte kannst du im YAML-Editor unter `boiler_hoehen` setzen. Bei ausgelassenen Feldern gelten die bisherigen Höhen aus diesem Beispiel.
+Miss die Höhe in Millimetern ab Speicherboden. **0 mm** liegt unten, die eingetragene Speicherhöhe liegt ganz oben. Beim Pufferspeicher dient **1000 mm** zunächst als Bezugsgrösse für die bisherigen relativen Positionen. Gib zuerst die tatsächliche Innenhöhe ein und passe dann die Fühler an.
+
+Im YAML-Editor kannst du die gleichen Einstellungen festlegen. Jede Fühlerliste enthält alle Fühler des jeweiligen Speichers. Eine leere Liste `[]` blendet sie alle aus. Fehlt die Liste, übernimmt die Karte die bisherige Konfiguration.
 
 ```yaml
 boiler_hoehen:
   speicher_mm: 1410
-  hf2_mm: 1140
-  bf1_mm: 1140
-  hf1_mm: 525
+boiler_fuehler:
+  - entitaet: sensor.beispiel_boiler_temperatur_hf2
+    name: Oben
+    hoehe_mm: 1140
+  - entitaet: sensor.beispiel_boiler_temperatur_hf1
+    name: Unten
+    hoehe_mm: 525
 ```
 
-Die Karte verschiebt die Markierungen und Temperaturfelder und berechnet die Temperaturschichtung sowie den Ladeindex mit den eingestellten Höhen. Liegen mehrere Fühler auf derselben Höhe, mittelt die Karte ihre verfügbaren Messwerte für die Berechnung. Der Ladeindex benötigt Messwerte an mindestens zwei verschiedenen Höhen.
+Für den Pufferspeicher heissen die entsprechenden Einstellungen `puffer_hoehen` und `puffer_fuehler`. Die Karte verwendet die eingestellten Positionen für Markierungen, Temperaturschichtung und Ladeindex. Sind mehrere Fühler auf derselben Höhe, mittelt sie die verfügbaren Messwerte. Bei einem einzelnen Messwert zeigt sie eine einheitliche Farbe. Der Ladeindex benötigt mindestens zwei belegte Höhen. Beim Pufferspeicher benötigt er zusätzlich die Vorlauf-Solltemperatur.
 
 ## GitHub-Repository anlegen
 
