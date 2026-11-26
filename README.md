@@ -28,6 +28,22 @@ Die übrigen Zuordnungen kannst du nach Bedarf aus [example.yaml](example.yaml) 
 
 Die Schaltfläche für die Warmwasserzirkulation ruft das unter `zirkulation.startskript` zugeordnete `script.*` auf. `zirkulation.pumpe_relais` liefert den Pumpenstatus. Lege das Skript in Home Assistant an oder verwende ein bestehendes Skript, das die Pumpe wie gewünscht steuert.
 
+## Fühlerhöhen am Boiler einstellen
+
+Öffne im Dashboard **Dashboard bearbeiten → Karte bearbeiten**. Trage im visuellen Editor die Innenhöhe des Speichers und die Höhen von **HF2**, **BF1** und **HF1** in Millimetern ein. Miss die Fühlerhöhen ab Speicherboden. Bei **0 mm** liegt der Fühler unten, bei **Speicherhöhe** ganz oben. Die Vorschau zeigt die neuen Positionen, sobald du ein Feld verlässt oder die Eingabe bestätigst.
+
+Dieselben Werte kannst du im YAML-Editor unter `boiler_hoehen` setzen. Bei ausgelassenen Feldern gelten die bisherigen Höhen aus diesem Beispiel.
+
+```yaml
+boiler_hoehen:
+  speicher_mm: 1410
+  hf2_mm: 1140
+  bf1_mm: 1140
+  hf1_mm: 525
+```
+
+Die Karte verschiebt die Markierungen und Temperaturfelder und berechnet die Temperaturschichtung sowie den Ladeindex mit den eingestellten Höhen. Liegen mehrere Fühler auf derselben Höhe, mittelt die Karte ihre verfügbaren Messwerte für die Berechnung. Der Ladeindex benötigt Messwerte an mindestens zwei verschiedenen Höhen.
+
 ## GitHub-Repository anlegen
 
 Lege ein öffentliches Repository mit dem Namen `boiler-puffer-dashboard-card` an. Lade die Dateien aus dem entpackten Einzelarchiv direkt in die Wurzel des Repositorys. HACS lädt die fertige Ressource `boiler-puffer-dashboard-card.js` aus dem Standardbranch. Ein GitHub-Release ist optional.
